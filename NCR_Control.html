@@ -3640,7 +3640,7 @@ const Detalhe = (() => {
       }
       const det = (e.tipo === 'CAMPO' || (e.tipo === 'PRODUTO' && e.de && e.para))
         ? '<div class="tl-detail"><span class="muted">de:</span> '+esc(corta(e.de,180))+'<br><span class="muted">para:</span> '+esc(corta(e.para,180))+'</div>'
-        : (e.obs ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
+        : ((e.obs && e.tipo !== 'INICIAL') ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
           + (e.tipo === 'PRODUTO' ? '<div class="small muted">'+esc(Util.strVal(e.para||e.de))+'</div>' : '');
       return `<div class="tl-item t-${esc(cls)}">
         <div class="tl-date">${Util.fDateTime(e.data)}${e.arquivo?' · <span title="Arquivo de origem">'+esc(e.arquivo)+'</span>':''}</div>
@@ -3788,6 +3788,10 @@ const Prod = (() => {
     const comMulti = lista.filter(p => p.ncrs > 1).length;
     const vincAtivos = lista.reduce((s,p) => s+p.ncrs-p.removidos, 0);
     const removidos = lista.reduce((s,p) => s+p.removidos, 0);
+    /* vinculos cuja NCR nao veio na aba de NCRs (exportacao parcial) */
+    const TP = DB.all().produtos;
+    let orfaos = 0, orfaosNcr = new Set();
+    for(const k in TP){ const p = TP[k]; if(!DB.all().ncrs[p.ncr]){ orfaos++; orfaosNcr.add(p.ncr); } }
     if(st.busca){ const q = st.busca.toLowerCase(); lista = lista.filter(p => p.produto.toLowerCase().indexOf(q) >= 0); }
     const campo = {ncrs:p => p.ncrs, abertas:p => p.abertas, fechadas:p => p.fechadas, produto:p => p.produto, ultima:p => p.ultima||''};
     lista.sort((a,b) => Util.cmp(campo[st.sort](a), campo[st.sort](b))*st.dir);
@@ -3798,12 +3802,14 @@ const Prod = (() => {
     const topAbertas = lista.slice().sort((a,b) => b.abertas-a.abertas).filter(p => p.abertas > 0).slice(0,12);
     const box = document.createElement('div');
     box.innerHTML = `
-      <div class="grid g4" style="margin-bottom:14px">
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:14px">
         ${tileHtml('Produtos distintos', Util.fNum(totalProdutos), 'no filtro atual', 'var(--s1)')}
         ${tileHtml('Vínculos ativos', Util.fNum(vincAtivos), 'NCR × produto', 'var(--s3)')}
         ${tileHtml('Produtos com >1 NCR', Util.fNum(comMulti), 'reincidência', 'var(--s4)')}
         ${tileHtml('Vínculos removidos', Util.fNum(removidos), 'retirados na origem', 'var(--muted)')}
+        ${tileHtml('Vínculos órfãos', Util.fNum(orfaos), Util.fNum(orfaosNcr.size)+' NCRs ausentes', orfaos?'var(--warning)':'var(--muted)')}
       </div>
+      ${orfaos ? '<div class="note warn" style="margin-bottom:14px"><b>'+Util.fNum(orfaos)+' vínculos de produto referenciam NCRs que não estão no banco</b> ('+Util.fNum(orfaosNcr.size)+' NCRs distintas). Isso acontece quando a aba de produtos do Excel cobre mais NCRs do que a aba de NCRs. Os vínculos foram preservados e passam a aparecer aqui assim que a NCR correspondente for importada.</div>' : ''}
       <div class="grid g2" style="margin-bottom:14px">
         ${card('Produtos com mais NCRs','top 12','<div class="chart-host" id="chP1"></div>')}
         ${card('Produtos com mais NCRs abertas','top 12','<div class="chart-host" id="chP2"></div>')}
