@@ -1154,6 +1154,12 @@ const Cfg = (() => {
     /* colunas cujo valor muda sozinho a cada exportacao: nao geram historico */
     camposIgnorados: ['tempo de tramitacao','tempo de tramitacao mais recente','dias em aberto','aging','idade'],
     camposMonitorados: [],           /* vazio = todos, exceto os ignorados */
+    /* le as colunas datadas do export ("Data avanço 2.1 - ...", "CEDOC Closure
+       Data") e reconstroi a trajetoria da NCR ja na primeira importacao */
+    reconstruirHistorico: true,
+    /* data da foto deduzida do conteudo (criacao + tempo de tramitacao) em vez
+       da data do arquivo, que muda ao copiar ou baixar novamente */
+    dataFotoDoConteudo: true,
     retencaoBackups: 10,
     retencaoDias: 60,
     pastaImports: 'imports',
@@ -1169,9 +1175,11 @@ const Cfg = (() => {
   /* aliases para reconhecer colunas independentemente do cabecalho exato */
   const ALIAS = {
     ncr:        ['numero ncr','n ncr','no ncr','num ncr','numero da ncr','ncr','id ncr','ncr id','numero','ncr number','number','identificador'],
-    status:     ['status','situacao','situacao atual','etapa atual','status atual','estado'],
-    dataCriacao:['data criacao','data de criacao','data da criacao','data abertura','data de abertura','criado em','creation date','created','data'],
-    produto:    ['produto','product','item','pn','part number','codigo produto','peca'],
+    status:     ['status','situacao','situacao atual','etapa atual','status atual','estado','fase',
+                 'current status','ncr status','status da ncr','state','current state','stage','current stage','phase'],
+    dataCriacao:['data criacao','data de criacao','data da criacao','data abertura','data de abertura','criado em',
+                 'creation date','created date','created','date created','open date','opening date','data'],
+    produto:    ['produto','product','item','pn','part number','codigo produto','peca','product code','part'],
     autor:      ['autor','author','criado por','emitente','responsavel abertura'],
     disciplina: ['disciplina','discipline','area'],
     nivel:      ['nivel','level','nivel ncr'],
@@ -1182,7 +1190,7 @@ const Cfg = (() => {
     descricao:  ['descricao','description','descricao da anomalia','texto'],
     tipoProduto:['tipo de produto','tipo produto','categoria produto'],
     tipoAnomalia:['tipo de anomalia','tipo anomalia','categoria','tipo'],
-    fechamento: ['cedoc closure data','data fechamento','data de fechamento','closure date','data encerramento'],
+    fechamento: ['cedoc closure data','data fechamento','data de fechamento','closure date','closing date','data encerramento','date closed'],
     serial:     ['serial','numero de serie','serie','sn'],
     fabricante: ['fabricante','manufacturer','fornecedor']
   };
@@ -1480,14 +1488,51 @@ const Flow = (() => {
     finais = new Set((cfg.statusFinais||[]).map(s => Util.norm(s)));
     unfounded = new Set((cfg.statusUnfounded||[]).map(s => Util.norm(s)));
   }
-  function ordemDe(status){
+  /* consulta pura: nao registra o status como desconhecido */
+  function lookup(status){
     if(!status) return null;
     const s = String(status).trim();
     if(mapa.has(s)) return mapa.get(s);
     const n = Util.norm(s);
     if(mapa.has(n)) return mapa.get(n);
-    desconhecidos.set(s, (desconhecidos.get(s)||0) + 1);
     return null;
+  }
+  function ordemDe(status){
+    const o = lookup(status);
+    if(o != null) return o;
+    if(status) desconhecidos.set(String(status).trim(), (desconhecidos.get(String(status).trim())||0) + 1);
+    return null;
+  }
+  /* Etapas citadas nas colunas datadas do export ("7.2 - TA") nem sempre
+     aparecem na coluna Status, logo nao constam no fluxo configurado. A ordem
+     e inferida pelo codigo numerico do rotulo, comparado com os status que o
+     fluxo ja conhece — sem isso a passagem por elas nao poderia ser
+     classificada como avanco ou retorno. */
+  function codigoNum(s){
+    const n = Util.norm(s);
+    let m = /^(\d{1,2})(?: (\d{1,2}))?\b/.exec(n);
+    if(!m) m = /\b(\d{1,2}) (\d{1,2})\b/.exec(n);
+    return m ? {maior:+m[1], menor: m[2] == null ? null : +m[2]} : null;
+  }
+  function ordemInferida(status){
+    const direto = lookup(status);
+    if(direto != null) return direto;
+    const c = codigoNum(status);
+    if(!c) return null;
+    const cfg = DB.cfg();
+    const grupo = [];
+    let exato = null;
+    (cfg.fluxo || []).forEach(f => {
+      const k = codigoNum(f.status);
+      if(!k || k.maior !== c.maior) return;
+      grupo.push({o:Number(f.ordem), menor: k.menor == null ? 0 : k.menor});
+      if(k.menor === c.menor) exato = Number(f.ordem);
+    });
+    if(exato != null) return exato;
+    if(!grupo.length) return null;
+    const alvo = c.menor == null ? 0 : c.menor;
+    grupo.sort((a,b) => Math.abs(a.menor-alvo) - Math.abs(b.menor-alvo) || a.o - b.o);
+    return grupo[0].o;
   }
   const isFinal = s => finais.has(Util.norm(s||''));
   const isUnfounded = s => unfounded.has(Util.norm(s||''));
@@ -1500,8 +1545,10 @@ const Flow = (() => {
   function classificar(de, para){
     if(!de) return 'INICIAL';
     if(Util.norm(de) === Util.norm(para)) return 'PERMANENCIA';
-    const od = ordemDe(de), op = ordemDe(para);
+    const od = ordemInferida(de), op = ordemInferida(para);
     const fd = isFinal(de), fp = isFinal(para);
+    if(od == null) ordemDe(de);
+    if(op == null) ordemDe(para);
     if(fd && !fp) return 'REABERTURA';
     if(!fd && fp) return 'FECHAMENTO';
     if(od == null || op == null) return 'INDEFINIDA';
@@ -1527,8 +1574,10 @@ const Flow = (() => {
     const cfg = DB.cfg();
     return (cfg.fluxo||[]).map(f => f.status);
   }
-  return {build, ordemDe, isFinal, isUnfounded, etapa, classificar, LABEL, ICON,
-          statusPorOrdem, todosStatus, desconhecidos, ordens: () => ordens.slice()};
+  /* eventos que representam movimentacao no fluxo (inclui marcos reconstruidos) */
+  const isFluxoEvt = e => e && (e.tipo === 'STATUS' || e.tipo === 'INICIAL' || e.tipo === 'MARCO');
+  return {build, ordemDe, ordemInferida, isFinal, isUnfounded, etapa, classificar, LABEL, ICON,
+          statusPorOrdem, todosStatus, desconhecidos, isFluxoEvt, ordens: () => ordens.slice()};
 })();
 
 /* ============================ DatabaseManager ============================ */
@@ -1725,9 +1774,320 @@ const History = (() => {
     return {id: Util.uid(), ncr:o.ncr, data:o.data, tipo:o.tipo, campo:o.campo||null,
             de:o.de==null?null:o.de, para:o.para==null?null:o.para,
             cls:o.cls||null, ordemDe:o.ordemDe==null?null:o.ordemDe, ordemPara:o.ordemPara==null?null:o.ordemPara,
-            arquivo:o.arquivo||null, importId:o.importId||null, obs:o.obs||null};
+            arquivo:o.arquivo||null, importId:o.importId||null, obs:o.obs||null,
+            estimado:o.estimado?1:0};
   }
   return {diff, evento, monitorados, invalidarCache};
+})();
+
+/* ============================ MarcoManager ============================
+   Exports de NCR normalmente trazem, na PROPRIA LINHA, colunas datadas que
+   registram a passagem da NCR por etapas do fluxo. Ex.:
+     "Data Criação"
+     "Data avanço 2.1 - Especialista ICN"    + "Usuário avanço 2.1 - ..."
+     "Data da rejeição 2.2 - TA Specialist"  + "Motivo da rejeição 2.2 - ..."
+     "Data da aprovação 7.2 - TA"            + "Responsável 7.2 - TA"
+     "CEDOC Closure Data", "7.2 - TA unfounded"
+   Sem ler essas colunas a primeira importacao conheceria apenas o status
+   ATUAL e todo o caminho ja percorrido seria perdido. Este modulo reconhece
+   as colunas pelo PADRAO DO CABECALHO — nunca por lista fixa, nome de aba ou
+   nome de arquivo — e reconstroi a trajetoria da NCR com datas, etapas e
+   responsaveis reais do export, ja na primeira leitura.
+   ====================================================================== */
+const Marcos = (() => {
+  /* destino=true  -> a data marca a ENTRADA da NCR nesse status
+     destino=false -> a NCR ESTAVA nesse passo e ele foi concluido/rejeitado ali */
+  const VERBOS = [
+    {v:'CRIACAO',      rot:'Criação',      destino:true,  re:/\b(criac|criad|abertur|abert|emiss|emitid|creation|creat|opened|opening)/},
+    {v:'IMPROCEDENTE', rot:'Improcedente', destino:true,  re:/\b(unfounded|improceden|sem fundamento)/},
+    {v:'FECHAMENTO',   rot:'Fechamento',   destino:true,  re:/\b(closure|closing|closed|encerr|fecham|fechad|conclus|finaliz)/},
+    {v:'REJEICAO',     rot:'Rejeição',     destino:false, re:/\b(rejeic|rejeit|reject|reprov|devoluc|devolvid|retorn|refus|recus)/},
+    {v:'APROVACAO',    rot:'Aprovação',    destino:false, re:/\b(aprovac|aprovad|approv|validac|validad|homolog)/},
+    {v:'AVANCO',       rot:'Avanço',       destino:false, re:/\b(avanc|advanc|forward|encaminh|liberac)/}
+  ];
+  const RE_DATA  = /\b(data|date|dt)\b/;
+  const RE_PESSOA = /\b(usuario|user|responsavel|responsaveis|especialista|analista|autor|by|owner|aprovador|executante)\b/;
+  const RE_MOTIVO = /\b(motivo|motivos|reason|justificativa|justificacao|observacao|comentario|comment)\b/;
+  /* palavras de moldura que nao fazem parte do nome da etapa */
+  const RUIDO = new Set(['data','date','dt','de','da','do','das','dos','em','no','na','pela','pelo','por',
+                         'the','of','at','and','e','a','o','as','os','ncr','etapa','step','status','fase']);
+
+  /* --- codigo numerico do rotulo: "2.1 - Especialista ICN" -> {maior:2, menor:1} --- */
+  function codigo(txt){
+    const n = Util.norm(txt);
+    let m = /^(\d{1,2})(?: (\d{1,2}))?\b/.exec(n);
+    if(!m) m = /\b(\d{1,2}) (\d{1,2})\b/.exec(n);
+    if(!m) return null;
+    return {maior:+m[1], menor: m[2] == null ? null : +m[2]};
+  }
+  const palavras = txt => Util.norm(txt).split(' ')
+    .filter(w => w.length > 1 && !RUIDO.has(w) && !/^\d+$/.test(w));
+
+  /* --- casa o rotulo restante com um status do fluxo configurado --- */
+  function casarStatus(token, fluxo){
+    const nt = Util.norm(token);
+    if(!nt) return null;
+    for(const f of fluxo) if(Util.norm(f.status) === nt) return f.status;
+    const ct = codigo(token), pt = palavras(token);
+    let melhor = null, melhorPt = 0;
+    for(const f of fluxo){
+      const cf = codigo(f.status), pf = palavras(f.status);
+      let s = 0;
+      if(ct && cf){
+        if(ct.maior === cf.maior && ct.menor === cf.menor) s += 4;
+        else if(ct.maior === cf.maior) s += 1;
+        else s -= 2;
+      }
+      let dentro = pt.length > 0;
+      pt.forEach(w => { if(pf.indexOf(w) >= 0) s += 2; else dentro = false; });
+      if(dentro) s += 3;      /* o rotulo e um subconjunto do nome do status */
+      if(s > melhorPt){ melhorPt = s; melhor = f.status; }
+    }
+    return melhorPt >= 4 ? melhor : null;
+  }
+
+  /* --- remove a moldura ("Data da rejeição X") sobrando o nome da etapa --- */
+  function extrairToken(label, verboRe){
+    let n = Util.norm(label);
+    if(verboRe) n = n.replace(verboRe, ' ');
+    n = n.replace(RE_DATA, ' ');
+    return n.split(' ').filter(w => w && !RUIDO.has(w)).join(' ');
+  }
+
+  /* ---------------------------------------------------------------
+     Detecta, num conjunto de colunas, os marcos de fluxo disponiveis.
+     Devolve tambem as colunas auxiliares (criacao, tempo total, tempo no
+     status atual) usadas para datar a entrada no status corrente.
+     --------------------------------------------------------------- */
+  function detectar(cols, tiposData, fluxo){
+    const marcos = [], aux = {criacao:null, tramitacao:null, recente:null};
+    const pessoas = [], motivos = [];
+    const lista = (cols || []).filter(Boolean);
+
+    lista.forEach(c => {
+      const n = Util.norm(c);
+      if(RE_PESSOA.test(n) && !RE_DATA.test(n)) pessoas.push(c);
+      if(RE_MOTIVO.test(n) && !RE_DATA.test(n)) motivos.push(c);
+      /* "tempo de tramitacao" total x "mais recente" (dias no status atual) */
+      if(/\b(tempo|dias|aging|idade|age|days)\b/.test(n)){
+        if(/\b(recente|atual|current|last|ultimo|ultima)\b/.test(n)){ if(!aux.recente) aux.recente = c; }
+        else if(/\b(tramitacao|aberto|aberta|total|aging|idade|age|ciclo)\b/.test(n)){ if(!aux.tramitacao) aux.tramitacao = c; }
+      }
+    });
+
+    lista.forEach(c => {
+      const n = Util.norm(c);
+      const temData = RE_DATA.test(n);
+      const ehData  = tiposData ? !!tiposData[c] : false;
+      if(!temData && !ehData) return;                       /* nao carrega data */
+      const vb = VERBOS.find(x => x.re.test(n));
+      if(!vb) return;                                        /* data sem verbo de fluxo */
+      /* "CEDOC Closure Data": o verbo faz parte do nome do status, entao o
+         rotulo completo e testado antes de remover o verbo */
+      const inteiro = extrairToken(c, null);
+      const token = extrairToken(c, vb.re);
+      const status = casarStatus(inteiro, fluxo) || casarStatus(token, fluxo);
+      if(vb.v === 'CRIACAO'){ if(!aux.criacao) aux.criacao = c; }
+      /* rotulo da etapa: o status do fluxo, ou o proprio token capitalizado */
+      const rotuloEtapa = status || rotuloDe(c, vb.re)
+        || (vb.v === 'CRIACAO'      ? statusAberturaDe(fluxo)
+          : vb.v === 'IMPROCEDENTE' ? statusFinalUnfounded()
+          : vb.v === 'FECHAMENTO'   ? statusFinalPadrao() : c);
+      marcos.push({col:c, v:vb.v, rot:vb.rot, destino:vb.destino, status, etapa:rotuloEtapa,
+                   token, respCol:parear(c, vb.re, pessoas), motivoCol:parear(c, vb.re, motivos)});
+    });
+    return {marcos, aux};
+  }
+
+  /* recorta do cabecalho original o trecho que nomeia a etapa, preservando
+     a grafia do export ("Data da rejeição 7.2 - TA" -> "7.2 - TA") */
+  function rotuloDe(label, verboRe){
+    const bruto = String(label);
+    /* recorta o trecho entre a primeira e a ultima palavra que nomeia a etapa,
+       preservando a grafia e a pontuacao originais do cabecalho */
+    const re = /[^\s]+/g;
+    let m, ini = -1, fim = -1;
+    while((m = re.exec(bruto))){
+      const n = Util.norm(m[0]);
+      if(!n || RUIDO.has(n) || verboRe.test(n) || RE_DATA.test(n)) continue;
+      if(ini < 0) ini = m.index;
+      fim = m.index + m[0].length;
+    }
+    if(ini < 0) return '';
+    return bruto.slice(ini, fim).replace(/^[-–—:.,\s]+|[-–—:.,\s]+$/g,'').trim();
+  }
+
+  /* acha a coluna auxiliar (responsavel/motivo) que se refere ao mesmo marco */
+  function parear(col, verboRe, candidatas){
+    if(!candidatas.length) return null;
+    const alvoTok = palavras(extrairToken(col, verboRe));
+    const alvoCod = codigo(col);
+    let melhor = null, pt = 0;
+    candidatas.forEach(c => {
+      const nc = Util.norm(c);
+      /* uma coluna que cita outro verbo pertence a outro marco */
+      const outroVerbo = VERBOS.some(x => x.re !== verboRe && x.re.test(nc) && !verboRe.test(nc));
+      let s = outroVerbo ? -4 : 0;
+      const ct = palavras(c), cc = codigo(c);
+      if(alvoCod && cc && alvoCod.maior === cc.maior && alvoCod.menor === cc.menor) s += 3;
+      alvoTok.forEach(w => { if(ct.indexOf(w) >= 0) s += 2; });
+      if(verboRe.test(nc)) s += 2;
+      if(s > pt){ pt = s; melhor = c; }
+    });
+    return pt >= 3 ? melhor : null;
+  }
+
+  const dias = v => { const m = /(-?\d+(?:[.,]\d+)?)/.exec(Util.strVal(v)); return m ? Math.round(parseFloat(m[1].replace(',','.'))) : null; };
+
+  /* --- data da foto deduzida do CONTEUDO: criacao + tempo de tramitacao --- */
+  function dataFotoDoConteudo(amostras){
+    const est = [];
+    amostras.forEach(a => {
+      if(!a.criadoEm || a.tramitacao == null || a.tramitacao < 0) return;
+      est.push(new Date(a.criadoEm).getTime() + a.tramitacao * Util.DAY);
+    });
+    if(est.length < 3) return null;
+    est.sort((x,y) => x-y);
+    return new Date(est[Math.floor(est.length/2)]).toISOString();
+  }
+
+  /* ---------------------------------------------------------------
+     Reconstroi a trajetoria de uma NCR a partir dos marcos da linha.
+     Gera eventos reais (cada um ancorado numa data do export), o mapa de
+     visitas por status, os contadores de movimentacao e a data de entrada
+     no status atual.
+     --------------------------------------------------------------- */
+  function reconstruir(o){
+    const {campos, det, statusAtual, statusCol, criadoEm, dataFoto, arquivo, importId, ncr, fluxo} = o;
+    const passos = [];
+    const vistos = new Set();
+    (det.marcos || []).forEach(m => {
+      const iso = Util.toISO(campos[m.col]);
+      if(!iso) return;
+      const ch = iso + '|' + m.v + '|' + m.etapa;
+      if(vistos.has(ch)) return;
+      vistos.add(ch);
+      passos.push({data:iso, v:m.v, rot:m.rot, destino:m.destino,
+                   etapa:m.etapa, status:m.status,
+                   resp: m.respCol ? Util.strVal(campos[m.respCol]) : '',
+                   motivo: m.motivoCol ? Util.strVal(campos[m.motivoCol]) : '',
+                   col:m.col});
+    });
+    /* a criacao ancora o inicio, mesmo quando o export nao traz coluna de marco */
+    if(criadoEm && !passos.some(p => p.v === 'CRIACAO'))
+      passos.push({data:criadoEm, v:'CRIACAO', rot:'Criação', destino:true, etapa:null, status:null, resp:'', motivo:'', col:null});
+    if(!passos.length) return null;
+    passos.sort((a,b) => a.data < b.data ? -1 : a.data > b.data ? 1 : (a.v === 'CRIACAO' ? -1 : 0));
+
+    const abertura = statusAberturaDe(fluxo);
+    const eventos = [], visitas = {};
+    const mov = {avancos:0, retornos:0, laterais:0, fechamentos:0, reaberturas:0, total:0, campos:0};
+    let atual = null, ordemAtual = null, desde = null;
+
+    function visitar(st){ if(!st) return; if(!visitas[st]) visitas[st] = {n:0, ms:0}; visitas[st].n++; }
+    function acumular(st, de, ate){
+      if(!st) return;
+      if(!visitas[st]) visitas[st] = {n:1, ms:0};
+      if(de && ate) visitas[st].ms += Math.max(0, new Date(ate) - new Date(de));
+    }
+    function mover(para, data, cls, extra){
+      const ordemPara = para ? Flow.ordemInferida(para) : null;
+      acumular(atual, desde, data);
+      eventos.push(History.evento(Object.assign({
+        ncr, data, tipo:'MARCO', campo:statusCol || 'Status',
+        de:atual, para, cls, ordemDe:ordemAtual, ordemPara,
+        arquivo, importId
+      }, extra || {})));
+      if(cls !== 'INICIAL'){
+        mov.total++;
+        if(cls === 'AVANCO') mov.avancos++;
+        else if(cls === 'RETORNO') mov.retornos++;
+        else if(cls === 'LATERAL') mov.laterais++;
+        else if(cls === 'FECHAMENTO') mov.fechamentos++;
+        else if(cls === 'REABERTURA') mov.reaberturas++;
+      }
+      visitar(para);
+      atual = para; ordemAtual = ordemPara; desde = data;
+    }
+    function classe(de, para, forc){
+      if(forc) return forc;
+      if(!de) return 'INICIAL';
+      return Flow.classificar(de, para);
+    }
+    const fonte = m => 'Registrado na coluna "' + m.col + '" do export'
+      + (m.resp ? ' · ' + m.resp : '') + (m.motivo ? ' · ' + m.motivo : '');
+
+    passos.forEach((p, i) => {
+      if(p.v === 'CRIACAO'){
+        const st = p.status || abertura;
+        if(atual) return;                                  /* criacao duplicada */
+        mover(st, p.data, 'INICIAL', {obs: p.col ? fonte(p) : 'Data de criação da NCR'});
+        return;
+      }
+      if(p.destino){                                       /* fechamento / improcedente */
+        let st = p.status;
+        if(!st) st = p.v === 'IMPROCEDENTE' ? statusFinalUnfounded() : statusFinalPadrao();
+        if(!st) return;
+        mover(st, p.data, classe(atual, st, Flow.isFinal(st) ? 'FECHAMENTO' : null),
+              {obs: fonte(p) + ' · ' + p.rot});
+        return;
+      }
+      /* passagem: a NCR estava nesta etapa e ela foi concluida/rejeitada aqui.
+         O export nao datao a CHEGADA, apenas a saida; a chegada entra na mesma
+         data e fica marcada como estimada. */
+      const st = p.status || p.etapa;
+      if(!st) return;
+      if(Util.norm(st) !== Util.norm(atual || '')){
+        mover(st, p.data, classe(atual, st), {obs:'Passagem por "' + st + '" registrada pela coluna "' + p.col + '" (data de chegada não consta no export)', estimado:true});
+      }
+      if(p.v === 'REJEICAO'){
+        /* rejeitada nesta etapa: volta para a etapa anterior conhecida */
+        const volta = eventos.length > 1 ? eventos[eventos.length-2].para : null;
+        const destino = (volta && Util.norm(volta) !== Util.norm(st)) ? volta : null;
+        if(destino) mover(destino, p.data, 'RETORNO', {obs: fonte(p) + ' · rejeitada em "' + st + '"'});
+        else eventos[eventos.length-1].obs = fonte(p) + ' · rejeitada em "' + st + '"';
+      }
+    });
+    if(!eventos.length) return null;
+
+    /* --- entrada no status atual --- */
+    const ultima = eventos[eventos.length-1].data;
+    let entrada = null;
+    const dr = det.aux.recente ? dias(campos[det.aux.recente]) : null;
+    if(dr != null && dr > 0){
+      const cand = new Date(new Date(dataFoto).getTime() - dr*Util.DAY).toISOString();
+      entrada = cand > ultima ? cand : ultima;             /* nunca antes do ultimo marco */
+    } else {
+      entrada = ultima;
+    }
+    if(entrada > dataFoto) entrada = dataFoto;
+
+    if(statusAtual && Util.norm(statusAtual) !== Util.norm(atual || '')){
+      mover(statusAtual, entrada, classe(atual, statusAtual), {
+        obs: dr != null && dr > 0
+          ? 'Status atual do export · há ' + Util.fDur(dr) + ' nesta situação (coluna "' + det.aux.recente + '")'
+          : 'Status atual do export · data de entrada estimada',
+        estimado:true});
+    } else if(atual){
+      desde = entrada;
+    }
+    return {eventos, visitas, mov, statusDesde: desde || entrada, nMarcos: passos.length};
+  }
+
+  function statusAberturaDe(fluxo){
+    let melhor = null, ord = Infinity;
+    (fluxo || []).forEach(f => { const o = Number(f.ordem); if(o < ord){ ord = o; melhor = f.status; } });
+    return melhor;
+  }
+  function statusFinalPadrao(){
+    const cfg = DB.cfg();
+    return (cfg.statusFinais || []).find(s => !Flow.isUnfounded(s)) || (cfg.statusFinais || [])[0] || null;
+  }
+  function statusFinalUnfounded(){
+    const cfg = DB.cfg();
+    return (cfg.statusUnfounded || [])[0] || statusFinalPadrao();
+  }
+  return {detectar, reconstruir, dataFotoDoConteudo, dias, VERBOS};
 })();
 
 /* ============================ ExcelImporter ============================ */
@@ -1898,7 +2258,6 @@ const Importer = (() => {
     stats.avisos = stats.avisos.concat(avisos);
     if(res.warnings && res.warnings.length) stats.avisos = stats.avisos.concat(res.warnings);
 
-    const dataFoto = arqInfo.dataFoto;
     const importId = stats.importId;
     const arquivoNome = arqInfo.name;
     const novosEventos = [];
@@ -1913,6 +2272,52 @@ const Importer = (() => {
     stats.colunasNcr = cols.length;
     stats.abaNcr = ncrInfo.nome;
     stats.abaProdutos = prodInfo ? prodInfo.nome : null;
+
+    /* ---- marcos de fluxo embutidos na propria linha ----
+       Colunas como "Data avanço 2.1 - Especialista ICN" ou "CEDOC Closure Data"
+       registram a passagem da NCR por etapas anteriores. Sao reconhecidas pelo
+       padrao do cabecalho e usadas para reconstruir a trajetoria na primeira
+       leitura, em vez de o historico comecar do zero no status atual. */
+    const tiposData = {};
+    for(let r = ncrInfo.headerRow + 1; r < Math.min(rows.length, ncrInfo.headerRow + 60); r++){
+      const row = rows[r]; if(!row) continue;
+      for(let j = 0; j < ncrInfo.cols.length; j++){
+        const c = ncrInfo.cols[j];
+        if(c && !tiposData[c] && row[j] instanceof Date) tiposData[c] = true;
+      }
+    }
+    const reconstruir = cfg.reconstruirHistorico !== false;
+    const det = Marcos.detectar(cols, tiposData, cfg.fluxo || []);
+    stats.colunasMarco = det.marcos.length;
+    /* noFluxo indica que a etapa consta na lista de status configurada; quando
+       nao consta, a ordem foi inferida pelo codigo numerico do rotulo */
+    const statusConfig = new Set((cfg.fluxo || []).map(f => Util.norm(f.status)));
+    stats.marcosDetectados = det.marcos.map(m => ({col:m.col, tipo:m.rot, etapa:m.etapa,
+      ordem: Flow.ordemInferida(m.etapa),
+      noFluxo: statusConfig.has(Util.norm(m.etapa || '')),
+      resp:m.respCol || null}));
+    if(det.marcos.length) stats.avisos.push('Reconstrução de histórico: ' + det.marcos.length +
+      ' coluna(s) de marco de fluxo reconhecida(s) — ' + det.marcos.map(m => m.rot + ' em "' + m.etapa + '"').join('; ') + '.');
+
+    /* a data da foto vinda do conteudo (criacao + tempo de tramitacao) e mais
+       confiavel que a data do arquivo, que muda ao copiar ou baixar de novo */
+    let dataFoto = arqInfo.dataFoto;
+    if(det.aux.tramitacao && dataCol){
+      const amostras = [];
+      for(let r = ncrInfo.headerRow + 1; r < rows.length && amostras.length < 80; r++){
+        const row = rows[r]; if(!row) continue;
+        const cEm = Util.toISO(row[ncrInfo.iData]);
+        const tj = ncrInfo.cols.indexOf(det.aux.tramitacao);
+        if(cEm && tj >= 0) amostras.push({criadoEm:cEm, tramitacao: Marcos.dias(row[tj])});
+      }
+      const fc = Marcos.dataFotoDoConteudo(amostras);
+      if(fc && cfg.dataFotoDoConteudo !== false){
+        dataFoto = fc; stats.dataFotoOrigem = 'conteúdo';
+        stats.avisos.push('Data da foto deduzida do conteúdo do export (' +
+          Util.fDateTime(fc) + '), a partir de "' + dataCol + '" + "' + det.aux.tramitacao + '".');
+      }
+    }
+    stats.dataFoto = dataFoto;
 
     for(let r = ncrInfo.headerRow + 1; r < rows.length; r++){
       if(cancelado) throw new Error('CANCELADO');
@@ -1945,11 +2350,36 @@ const Importer = (() => {
           visitas: {}, arquivoOrigem: arquivoNome, hashOrigem: arqInfo.hash,
           fontes: [{arquivo:arquivoNome, hash:arqInfo.hash, data:dataFoto, tipo:'inicial'}]
         };
-        if(status) rec.visitas[status] = {n:1, ms:0};
         d.ncrs[key] = rec;
-        novosEventos.push(History.evento({ncr:key, data:dataFoto, tipo:'INICIAL', campo:statusCol||'Status',
-          de:null, para:status, cls:'INICIAL', ordemPara:ordem, arquivo:arquivoNome, importId,
-          obs:'Estado inicial conhecido'}));
+        /* Trajetoria reconstruida a partir das colunas datadas da propria linha:
+           a NCR ja entra no banco com o caminho percorrido, nao apenas com o
+           status atual. Sem isso o historico so comecaria na proxima foto. */
+        const rc = reconstruir && det.marcos.length
+          ? Marcos.reconstruir({campos, det, statusAtual:status, statusCol, criadoEm,
+              dataFoto, arquivo:arquivoNome, importId, ncr:key, fluxo:cfg.fluxo || []})
+          : null;
+        if(rc){
+          rec.visitas = rc.visitas;
+          rec.mov = rc.mov;
+          rec.statusDesde = rc.statusDesde || dataFoto;
+          rec.primeiraVez = rc.eventos[0].data;
+          rec.ultimaAlteracao = rc.eventos[rc.eventos.length-1].data;
+          rec.reconstruida = rc.nMarcos;
+          rc.eventos.forEach(e => {
+            novosEventos.push(e);
+            if(e.cls && e.cls !== 'INICIAL') stats.cls[e.cls] = (stats.cls[e.cls]||0) + 1;
+          });
+          stats.marcosLidos += rc.nMarcos;
+          stats.ncrsReconstruidas++;
+          /* movimento vindo do proprio export nao e uma mudanca ocorrida ENTRE
+             duas fotos: os dois numeros ficam separados no relatorio */
+          stats.movimentosReconstruidos += Math.max(0, rc.eventos.length - 1);
+        } else {
+          if(status) rec.visitas[status] = {n:1, ms:0};
+          novosEventos.push(History.evento({ncr:key, data:dataFoto, tipo:'INICIAL', campo:statusCol||'Status',
+            de:null, para:status, cls:'INICIAL', ordemPara:ordem, arquivo:arquivoNome, importId,
+            obs:'Estado inicial conhecido'}));
+        }
         stats.novas++;
         continue;
       }
@@ -1966,6 +2396,27 @@ const Importer = (() => {
       const antes = {}, depois = {};
       colsSet.forEach(c => { antes[c] = rec.campos[c]; depois[c] = campos[c] === undefined ? '' : campos[c]; });
       const mudancas = History.diff(antes, depois, statusCol);
+      /* marcos que passaram a ter data desde a ultima foto: sao movimentacoes
+         reais que o export datou, e nao apenas uma mudanca de campo */
+      if(reconstruir && det.marcos.length){
+        for(const m of det.marcos){
+          if(!colsSet.has(m.col)) continue;
+          const nova = Util.toISO(campos[m.col]);
+          if(!nova || Util.toISO(rec.campos[m.col])) continue;
+          const etapa = m.status || m.etapa;
+          if(!etapa) continue;
+          novosEventos.push(History.evento({ncr:key, data:nova, tipo:'MARCO', campo:m.col,
+            de:rec.status, para:etapa, cls: m.v === 'REJEICAO' ? 'RETORNO'
+              : (m.destino && Flow.isFinal(etapa) ? 'FECHAMENTO' : Flow.classificar(rec.status, etapa)),
+            ordemDe:rec.ordem, ordemPara:Flow.ordemInferida(etapa), arquivo:arquivoNome, importId,
+            obs: m.rot + ' registrado na coluna "' + m.col + '" do export'
+                 + (m.respCol && campos[m.respCol] ? ' · ' + Util.strVal(campos[m.respCol]) : '')
+                 + (m.motivoCol && campos[m.motivoCol] ? ' · ' + Util.strVal(campos[m.motivoCol]) : '')}));
+          if(!rec.visitas[etapa]) rec.visitas[etapa] = {n:0, ms:0};
+          rec.visitas[etapa].n++;
+          stats.marcosLidos++;
+        }
+      }
       let mudouStatus = false;
       if(statusCol && status && Util.strVal(rec.status) !== status){
         mudouStatus = true;
@@ -2094,6 +2545,8 @@ const Importer = (() => {
     return {importId, arquivo:arq.name, hash:null, tamanho:arq.size, dataArquivo:arq.dataFoto,
       importadoEm:new Date().toISOString(), analisadas:0, novas:0, atualizadas:0, semAlteracao:0,
       mudancasStatus:0, retroativas:0, duplicadasNoArquivo:0,
+      marcosLidos:0, ncrsReconstruidas:0, colunasMarco:0, dataFotoOrigem:'arquivo',
+      movimentosReconstruidos:0,
       cls:{AVANCO:0,RETORNO:0,LATERAL:0,FECHAMENTO:0,REABERTURA:0,INDEFINIDA:0},
       produtosAnalisados:0, produtosNovos:0, produtosAtualizados:0, produtosRemovidos:0, produtosOrfaos:0,
       eventosGerados:0, erros:[], avisos:[], duracaoMs:0};
@@ -2566,11 +3019,17 @@ const Metrics = (() => {
       if(fechado){ a.ms += ms; a.n++; } else { a.emAberto++; a.msAberto += ms; }
     };
     list.forEach(n => {
-      const ev = DB.eventos(n.key).filter(e => e.tipo === 'STATUS' || e.tipo === 'INICIAL');
+      const ev = DB.eventos(n.key).filter(Flow.isFluxoEvt);
       for(let i = 0; i < ev.length; i++){
         const e = ev[i], next = ev[i+1];
         const st = e.para;
-        if(next){ add(st, new Date(next.data)-new Date(e.data), true); }
+        if(!next) continue;
+        const dur = new Date(next.data) - new Date(e.data);
+        /* quando o export datou so a SAIDA da etapa, a chegada entra na mesma
+           data e o intervalo fica zerado: isso nao e permanencia de zero dia,
+           e ausencia de informacao — nao pode entrar na media */
+        if(e.estimado && dur <= 0) continue;
+        add(st, dur, true);
       }
       const atual = n.statusDesde ? (Date.now()-new Date(n.statusDesde)) : null;
       if(atual != null) add(n.status, atual, false);
@@ -3007,8 +3466,11 @@ const UI = (() => {
       a.arquivos++; a.analisadas += s.analisadas; a.novas += s.novas; a.atualizadas += s.atualizadas;
       a.semAlteracao += s.semAlteracao; a.status += s.mudancasStatus; a.retornos += s.cls.RETORNO;
       a.produtos += s.produtosNovos + s.produtosAtualizados; a.erros += s.erros.length; a.eventos += s.eventosGerados;
+      a.marcos += s.marcosLidos || 0; a.reconstruidas += s.ncrsReconstruidas || 0;
+      a.movRecon += s.movimentosReconstruidos || 0;
       return a;
-    }, {arquivos:0,ignorados:0,falhas:0,analisadas:0,novas:0,atualizadas:0,semAlteracao:0,status:0,retornos:0,produtos:0,erros:0,eventos:0});
+    }, {arquivos:0,ignorados:0,falhas:0,analisadas:0,novas:0,atualizadas:0,semAlteracao:0,status:0,retornos:0,
+        produtos:0,erros:0,eventos:0,marcos:0,reconstruidas:0,movRecon:0});
     const linhas = lista.map(s => {
       const cls = s.ignorado ? 'muted' : s.falhou ? 'critical' : '';
       return `<tr>
@@ -3041,6 +3503,11 @@ const UI = (() => {
           ${tile('Produtos atualizados', Util.fNum(t.produtos), 'var(--s2)')}
           ${tile('Eventos no histórico', Util.fNum(t.eventos), 'var(--s4)')}
         </div>
+        ${t.marcos ? '<div class="note" style="margin-bottom:14px"><b>Histórico reconstruído pelas colunas datadas do export:</b> '
+          + Util.fNum(t.marcos) + ' marco(s) de fluxo lido(s) em ' + Util.fNum(t.reconstruidas)
+          + ' NCR(s), gerando ' + Util.fNum(t.movRecon) + ' movimento(s) com a data e o responsável registrados na planilha. '
+          + 'Esses movimentos são anteriores a esta importação e por isso não entram em “Mudanças de status”, '
+          + 'que conta apenas o que mudou <i>entre</i> duas fotos.</div>' : ''}
         <div class="tbl-wrap"><table class="tbl"><thead><tr>
           <th>Arquivo</th><th>Data do arquivo</th><th class="num">Analisadas</th><th class="num">Novas</th>
           <th class="num">Atualizadas</th><th class="num">S/ alteração</th><th class="num">Status</th><th class="num">Retornos</th>
@@ -3291,7 +3758,7 @@ const Dash = (() => {
       onClick: k => { Filters.state.produto = k; Filters.invalidate(); UI.ir('ncrs'); }});
 
     /* --- listas --- */
-    const evs = DB.all().historico.filter(e => e.tipo === 'STATUS' && keys.has(e.ncr)).slice(-12).reverse();
+    const evs = DB.all().historico.filter(e => Flow.isFluxoEvt(e) && e.cls !== 'INICIAL' && keys.has(e.ncr)).slice(-12).reverse();
     $('#dashRecentes').innerHTML = evs.length ? evs.map(e => {
       const rec = DB.all().ncrs[e.ncr];
       return `<div class="kv"><div style="min-width:0">
@@ -3518,8 +3985,8 @@ const Tabela = (() => {
 /* ============================ Detalhe da NCR ============================ */
 const Detalhe = (() => {
   function sequencia(rec){
-    const ev = DB.eventos(rec.key).filter(e => e.tipo === 'INICIAL' || e.tipo === 'STATUS');
-    const out = ev.map(e => ({status:e.para, data:e.data, cls:e.cls, de:e.de}));
+    const ev = DB.eventos(rec.key).filter(Flow.isFluxoEvt);
+    const out = ev.map(e => ({status:e.para, data:e.data, cls:e.cls, de:e.de, estimado:e.estimado, obs:e.obs}));
     if(!out.length && rec.status) out.push({status:rec.status, data:rec.primeiraVez, cls:'INICIAL'});
     return out;
   }
@@ -3528,14 +3995,29 @@ const Detalhe = (() => {
     const byOrd = Flow.statusPorOrdem();
     const ordens = Array.from(byOrd.keys()).sort((a,b) => a-b);
     const seq = sequencia(rec);
-    const fora = [];
-    seq.forEach(s => { if(s.status && Flow.ordemDe(s.status) == null && fora.indexOf(s.status) < 0) fora.push(s.status); });
-    const colunas = ordens.map(o => ({ordem:o, titulo:Flow.etapa(o), status:byOrd.get(o).slice()}));
+    /* etapas que aparecem so nas colunas datadas do export (ex.: "7.2 - TA")
+       entram na coluna da ordem inferida, para o caminho nao ficar partido */
+    const noFluxo = new Set();
+    byOrd.forEach(lst => lst.forEach(st => noFluxo.add(Util.norm(st))));
+    const fora = [], extras = new Map();
+    seq.forEach(s => {
+      if(!s.status || noFluxo.has(Util.norm(s.status))) return;
+      const oi = Flow.ordemInferida(s.status);
+      if(oi != null && byOrd.has(oi)){
+        if(!extras.has(oi)) extras.set(oi, []);
+        if(extras.get(oi).indexOf(s.status) < 0) extras.get(oi).push(s.status);
+      } else if(fora.indexOf(s.status) < 0) fora.push(s.status);
+    });
+    const descobertos = new Set();
+    extras.forEach(lst => lst.forEach(st => descobertos.add(st)));
+    const colunas = ordens.map(o => ({ordem:o, titulo:Flow.etapa(o),
+                                      status:byOrd.get(o).slice().concat(extras.get(o) || [])}));
     if(fora.length) colunas.push({ordem:null, titulo:'Fora do fluxo', status:fora});
     const NW = 172, NH = 28, VG = 9, HG = 48, PX = 16, PY = 46;
     const maxRows = Math.max.apply(null, colunas.map(c => c.status.length));
     const W = PX*2 + colunas.length*NW + (colunas.length-1)*HG;
-    const H = PY + maxRows*(NH+VG) + 46;
+    const gridBot = PY + maxRows*(NH+VG);
+    const H = gridBot + 74;      /* folga para o canal das setas longas */
     const pos = new Map();
     colunas.forEach((c,i) => c.status.forEach((s,j) => {
       pos.set(s, {x: PX + i*(NW+HG), y: PY + j*(NH+VG), col:i, row:j});
@@ -3570,8 +4052,11 @@ const Detalhe = (() => {
       const ink = visitado || ehAtual ? 'var(--text)' : 'var(--muted)';
       const label = s.length > 23 ? s.slice(0,22)+'…' : s;
       const dias = v && v.ms ? Math.round(v.ms/Util.DAY) : 0;
-      g += `<g><title>${esc(s)}${visitado ? ' — '+v.n+' passagem(ns)'+(dias?', '+dias+' dia(s) acumulados':'') : ' — não percorrido'}</title>`;
-      g += `<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${sw}"/>`;
+      /* etapa vinda so das colunas datadas do export: borda tracejada */
+      const desc = descobertos.has(s);
+      g += `<g><title>${esc(s)}${visitado ? ' — '+v.n+' passagem(ns)'+(dias?', '+dias+' dia(s) acumulados':', tempo não informado pelo export') : ' — não percorrido'}`
+         + `${desc ? ' · etapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}</title>`;
+      g += `<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${sw}"${desc?' stroke-dasharray="4 3"':''}/>`;
       if(ehAtual) g += `<rect x="${p.x}" y="${p.y+4}" width="3" height="${NH-8}" rx="2" style="fill:${rec.fechada?'var(--good)':'var(--accent)'}"/>`;
       g += `<text x="${p.x+10}" y="${p.y+NH/2+4}" style="fill:${ink};font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
       if(visitado && v.n > 1)
@@ -3592,32 +4077,47 @@ const Detalhe = (() => {
       const rep = usadas.get(ek) || 0;
       usadas.set(ek, rep+1);
       const off = rep*7;
-      let d;
+      let d, mx, my;
       const ay = pa.y+NH/2, by = pb.y+NH/2;
-      if(pb.col > pa.col){
+      const salto = Math.abs(pb.col - pa.col);
+      if(pb.col > pa.col && salto === 1){
         const x1 = pa.x+NW, x2 = pb.x;
         const c = Math.max(22, (x2-x1)/2);
         d = `M${x1},${ay} C${x1+c},${ay+off} ${x2-c},${by+off} ${x2},${by}`;
+        mx = (x1+x2)/2; my = (ay+by)/2 + off;
+      } else if(pb.col > pa.col){
+        /* salto de mais de uma coluna: desce para um canal livre abaixo da
+           grade e sobe no destino, para a seta nao cruzar caixas no caminho */
+        const x1 = pa.x+NW/2, x2 = pb.x+NW/2;
+        const via = gridBot + 16 + off;
+        d = `M${x1},${pa.y+NH} C${x1},${via} ${x1},${via} ${x1+26},${via}`
+          + ` L${x2-26},${via} C${x2},${via} ${x2},${via} ${x2},${pb.y+NH}`;
+        mx = (x1+x2)/2; my = via;
       } else if(pb.col < pa.col){
         const x1 = pa.x, x2 = pb.x+NW;
         const dip = Math.max(ay, by) + 26 + off;
         d = `M${x1},${ay} C${x1-40},${ay} ${x1-40},${dip} ${(x1+x2)/2},${dip} C${x2+40},${dip} ${x2+40},${by} ${x2},${by}`;
+        mx = (x1+x2)/2; my = dip;
       } else {
         const x1 = pa.x+NW, bump = 26+off;
         d = `M${x1},${ay} C${x1+bump},${ay} ${x1+bump},${by} ${pb.x+NW},${by}`;
+        mx = x1 + bump*0.7; my = (ay+by)/2;
       }
-      g += `<path d="${d}" fill="none" style="stroke:${cor};opacity:.85" stroke-width="2" marker-end="url(#ar-${cls})"><title>${esc(Flow.LABEL[cls]||cls)} — ${Util.fDate(b.data)}: ${esc(a.status)} → ${esc(b.status)}</title></path>`;
-      const mx = (pa.x+NW/2 + pb.x+NW/2)/2, my = (ay+by)/2 + (pb.col < pa.col ? 26+off : off);
+      g += `<path d="${d}" fill="none" style="stroke:${cor};opacity:.85" stroke-width="2"${b.estimado?' stroke-dasharray="5 4"':''} marker-end="url(#ar-${cls})"><title>${esc(Flow.LABEL[cls]||cls)} — ${Util.fDate(b.data)}: ${esc(a.status)} → ${esc(b.status)}${b.estimado?' (data estimada: o export registra apenas a saída da etapa)':''}${b.obs?'\n'+esc(b.obs):''}</title></path>`;
       g += `<circle cx="${mx}" cy="${my}" r="8.5" style="fill:var(--surface);stroke:${cor}" stroke-width="1.5"/>`;
       g += `<text x="${mx}" y="${my+3.5}" text-anchor="middle" style="fill:var(--text-2);font-size:9px;font-weight:700">${i}</text>`;
     }
-    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:none">${g}</svg>`;
+    /* escala para caber na largura disponivel em vez de forcar rolagem
+       horizontal, mas sem ampliar alem do tamanho natural */
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet"
+      style="max-width:${W}px;height:auto;display:block">${g}</svg>`;
   }
   function legendaFluxo(){
     const it = [['AVANCO','var(--good)'],['RETORNO','var(--critical)'],['LATERAL','var(--warning)'],
                 ['FECHAMENTO','var(--s7)'],['REABERTURA','var(--serious)']];
     return '<div class="flow-legend">'+it.map(([k,c]) => '<span><i style="background:'+c+'"></i>'+Flow.ICON[k]+' '+Flow.LABEL[k]+'</span>').join('')
-      + '<span><i style="background:var(--axis)"></i>Etapa percorrida</span><span><i style="background:var(--grid)"></i>Não percorrida</span></div>';
+      + '<span><i style="background:var(--axis)"></i>Etapa percorrida</span><span><i style="background:var(--grid)"></i>Não percorrida</span>'
+      + '<span title="a chegada na etapa não é datada pelo export"><i style="background:repeating-linear-gradient(90deg,var(--text-2) 0 3px,transparent 3px 6px)"></i>Data estimada</span></div>';
   }
   /* ----- timeline ----- */
   function timeline(rec, limite){
@@ -3627,12 +4127,13 @@ const Detalhe = (() => {
     return '<div class="tl">' + ev.map(e => {
       const cls = e.cls || e.tipo;
       let main = '';
-      if(e.tipo === 'INICIAL'){
-        main = '<b>'+esc(e.para||'—')+'</b> <span class="mv mv-INICIAL">• Estado inicial conhecido</span>';
-      } else if(e.tipo === 'STATUS'){
+      if(e.tipo === 'INICIAL' || (e.tipo === 'MARCO' && e.cls === 'INICIAL')){
+        main = '<b>'+esc(e.para||'—')+'</b> <span class="mv mv-INICIAL">• Abertura da NCR</span>';
+      } else if(e.tipo === 'STATUS' || e.tipo === 'MARCO'){
         main = '<span>'+esc(e.de||'—')+'</span><span class="arrowto">→</span><b>'+esc(e.para||'—')+'</b>'
              + ' <span class="mv mv-'+esc(cls)+'">'+(Flow.ICON[cls]||'')+' '+esc(Flow.LABEL[cls]||cls)+'</span>'
-             + (e.ordemDe != null || e.ordemPara != null ? '<span class="small muted">ordem '+(e.ordemDe==null?'—':e.ordemDe)+' → '+(e.ordemPara==null?'—':e.ordemPara)+'</span>' : '');
+             + (e.ordemDe != null || e.ordemPara != null ? '<span class="small muted">ordem '+(e.ordemDe==null?'—':e.ordemDe)+' → '+(e.ordemPara==null?'—':e.ordemPara)+'</span>' : '')
+             + (e.estimado ? ' <span class="badge ord" title="a data exata da chegada nesta etapa não consta no export">data estimada</span>' : '');
       } else if(e.tipo === 'PRODUTO'){
         main = '<b>'+esc(e.campo||'Produto')+'</b> <span class="mv mv-CAMPO">▤ Produto</span>';
       } else {
@@ -3640,7 +4141,7 @@ const Detalhe = (() => {
       }
       const det = (e.tipo === 'CAMPO' || (e.tipo === 'PRODUTO' && e.de && e.para))
         ? '<div class="tl-detail"><span class="muted">de:</span> '+esc(corta(e.de,180))+'<br><span class="muted">para:</span> '+esc(corta(e.para,180))+'</div>'
-        : ((e.obs && e.tipo !== 'INICIAL') ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
+        : ((e.obs && e.tipo !== 'INICIAL' && e.obs !== 'Estado inicial conhecido') ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
           + (e.tipo === 'PRODUTO' ? '<div class="small muted">'+esc(Util.strVal(e.para||e.de))+'</div>' : '');
       return `<div class="tl-item t-${esc(cls)}">
         <div class="tl-date">${Util.fDateTime(e.data)}${e.arquivo?' · <span title="Arquivo de origem">'+esc(e.arquivo)+'</span>':''}</div>
@@ -3710,7 +4211,8 @@ const Detalhe = (() => {
       title: esc(rec.id),
       sub: badgeStatus(rec) + ' <span class="badge ord">' + esc(Flow.etapa(rec.ordem)) + '</span> '
          + (m.retornos ? '<span class="mv mv-RETORNO">↩ '+m.retornos+' retorno(s)</span> ' : '')
-         + (!rec.fechada && m.diasMov >= (DB.cfg().semMovimentacaoDias||30) ? '<span class="badge warn">parada há '+m.diasMov+' dias</span>' : ''),
+         + (!rec.fechada && m.diasMov >= (DB.cfg().semMovimentacaoDias||30) ? '<span class="badge warn">parada há '+m.diasMov+' dias</span>' : '')
+         + (rec.reconstruida ? ' <span class="badge new" title="trajetória lida das colunas datadas do próprio export, e não apenas de importações sucessivas">trajetória reconstruída de '+rec.reconstruida+' marcos</span>' : ''),
       body,
       footer: '<button class="btn" id="dtExp">Exportar NCR (JSON)</button><button class="btn" data-close>Fechar</button>'
     });
@@ -3727,17 +4229,27 @@ const Detalhe = (() => {
     const v = rec.visitas || {};
     const ks = Object.keys(v);
     if(!ks.length) return semDados('Nenhuma etapa registrada');
-    const rows = ks.map(s => ({status:s, n:v[s].n, dias: v[s].ms/Util.DAY, ordem:Flow.ordemDe(s)}))
+    /* tempo 0 numa etapa cuja chegada nao foi datada pelo export nao e
+       "zero dia": e ausencia de informacao, e precisa aparecer como tal */
+    const est = new Set();
+    DB.eventos(rec.key).forEach(e => { if(Flow.isFluxoEvt(e) && e.estimado && e.para) est.add(Util.strVal(e.para)); });
+    const rows = ks.map(s => ({status:s, n:v[s].n, dias: v[s].ms/Util.DAY, ordem:Flow.ordemInferida(s),
+                               semInfo: !v[s].ms && est.has(Util.strVal(s))}))
       .sort((a,b) => b.dias-a.dias);
     const max = Math.max.apply(null, rows.map(r => r.dias)) || 1;
+    const algumSemInfo = rows.some(r => r.semInfo);
     return '<table class="tbl"><thead><tr><th>Status</th><th class="num">Passagens</th><th class="num">Dias acumulados</th><th style="width:130px"></th></tr></thead><tbody>'
       + rows.map(r => {
         const atual = Util.strVal(r.status) === Util.strVal(rec.status);
         const cor = r.ordem == null ? 'var(--muted)' : Charts.SERIES[(r.ordem-1)%8];
         return `<tr><td>${esc(r.status)} ${atual?'<span class="badge open">atual</span>':''}</td>
-          <td class="num">${r.n}</td><td class="num">${Util.fDec(r.dias,0)}</td>
-          <td><div class="meter"><i style="width:${Math.max(3,r.dias/max*100)}%;background:${cor}"></i></div></td></tr>`;
-      }).join('') + '</tbody></table>';
+          <td class="num">${r.n}</td>
+          <td class="num">${r.semInfo ? '<span class="muted" title="o export datou apenas a saída desta etapa, não a chegada">não informado</span>' : Util.fDec(r.dias,0)}</td>
+          <td>${r.semInfo ? '' : '<div class="meter"><i style="width:'+Math.max(3,r.dias/max*100)+'%;background:'+cor+'"></i></div>'}</td></tr>`;
+      }).join('') + '</tbody></table>'
+      + (algumSemInfo ? '<div class="small muted" style="margin-top:8px">Etapas marcadas como <b>não informado</b> foram percorridas '
+        + '(a passagem consta no export), mas a planilha registra apenas a data de saída — o tempo de permanência nelas é desconhecido '
+        + 'e fica de fora das médias por etapa.</div>' : '');
   }
   function tabelaProdutos(prods){
     if(!prods.length) return semDados('Nenhum produto vinculado a esta NCR');
@@ -3950,7 +4462,7 @@ const FluxoView = (() => {
     const list = Filters.aplicar();
     const keys = new Set(list.map(n => n.key));
     const evs = DB.all().historico.filter(e => keys.has(e.ncr));
-    const stEv = evs.filter(e => e.tipo === 'STATUS');
+    const stEv = evs.filter(e => Flow.isFluxoEvt(e) && e.cls !== 'INICIAL');
     const r = Metrics.resumo(list);
     const tempos = Metrics.temposPorStatus(list);
     const fech = Metrics.tempoAteFechamento(list);
@@ -4037,11 +4549,31 @@ const FluxoView = (() => {
 /* ============================ Histórico geral ============================ */
 const Hist = (() => {
   const st = {tipo:'todos', pagina:1, busca:''};
+  /* Ordenar e contabilizar o historico inteiro a cada render fica caro quando
+     ele passa de algumas dezenas de milhares de eventos. O resultado e mantido
+     em cache e refeito apenas quando o banco muda; o filtro por NCR preserva a
+     ordem, logo nao precisa reordenar. */
+  let cache = {chave:null, ord:null, cont:null};
+  function ordenado(todos){
+    const meta = DB.all().meta || {};
+    const chave = todos.length + '|' + (todos.length ? todos[0].id : '') + '|' + (meta.atualizadoEm || '');
+    if(cache.chave !== chave){
+      const ord = todos.slice().sort((a,b) => a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
+      const cont = {};
+      for(const e of ord){
+        const k = e.tipo === 'CAMPO' ? 'CAMPO' : e.tipo === 'PRODUTO' ? 'PRODUTO' : e.cls;
+        cont[k] = (cont[k]||0) + 1;
+      }
+      cache = {chave, ord, cont};
+    }
+    return cache;
+  }
   function render(host){
     const todos = DB.all().historico;
     if(!todos.length){ host.innerHTML = semDados('O histórico começa a ser construído a partir da primeira importação. Importe um novo arquivo para registrar as mudanças.'); return; }
+    const cc = ordenado(todos);
     const keys = new Set(Filters.aplicar().map(n => n.key));
-    let evs = todos.filter(e => keys.has(e.ncr));
+    let evs = cc.ord.filter(e => keys.has(e.ncr));
     if(st.tipo !== 'todos'){
       if(st.tipo === 'CAMPO') evs = evs.filter(e => e.tipo === 'CAMPO');
       else if(st.tipo === 'PRODUTO') evs = evs.filter(e => e.tipo === 'PRODUTO');
@@ -4055,12 +4587,10 @@ const Hist = (() => {
             || Util.strVal(e.de).toLowerCase().indexOf(q) >= 0 || Util.strVal(e.campo).toLowerCase().indexOf(q) >= 0;
       });
     }
-    evs = evs.slice().sort((a,b) => Util.cmp(b.data,a.data));
     const porPag = 120, totalPag = Math.max(1, Math.ceil(evs.length/porPag));
     if(st.pagina > totalPag) st.pagina = 1;
     const page = evs.slice((st.pagina-1)*porPag, st.pagina*porPag);
-    const cont = {};
-    todos.forEach(e => { const k = e.tipo === 'CAMPO' ? 'CAMPO' : e.tipo === 'PRODUTO' ? 'PRODUTO' : e.cls; cont[k] = (cont[k]||0)+1; });
+    const cont = cc.cont;
     host.innerHTML = '';
     UI.barraFiltros(host, {maxFacetas:3});
     const filtros = [['todos','Todos'],['AVANCO','Avanços'],['RETORNO','Retornos'],['LATERAL','Laterais'],
@@ -4084,8 +4614,10 @@ const Hist = (() => {
         const rec = DB.all().ncrs[e.ncr];
         const cls = e.cls || e.tipo;
         let txt;
-        if(e.tipo === 'STATUS') txt = '<span class="small">'+esc(e.de||'—')+'</span> <span class="arrowto">→</span> <b>'+esc(e.para||'—')+'</b>';
-        else if(e.tipo === 'INICIAL') txt = '<b>'+esc(e.para||'—')+'</b> <span class="muted small">estado inicial conhecido</span>';
+        if(e.tipo === 'STATUS' || (e.tipo === 'MARCO' && e.cls !== 'INICIAL'))
+          txt = '<span class="small">'+esc(e.de||'—')+'</span> <span class="arrowto">→</span> <b>'+esc(e.para||'—')+'</b>'
+              + (e.tipo === 'MARCO' ? ' <span class="small muted">· marco do export</span>' : '');
+        else if(e.tipo === 'INICIAL' || e.cls === 'INICIAL') txt = '<b>'+esc(e.para||'—')+'</b> <span class="muted small">abertura da NCR</span>';
         else txt = '<b>'+esc(e.campo||'')+'</b>: <span class="small">'+esc(Util.strVal(e.de).slice(0,60)||'(vazio)')+'</span> <span class="arrowto">→</span> <span class="small">'+esc(Util.strVal(e.para).slice(0,60)||'(vazio)')+'</span>';
         return `<tr><td class="small">${Util.fDateTime(e.data)}</td>
           <td>${rec?ncrLink(rec.id,e.ncr):esc(e.ncr)}</td>
@@ -4165,7 +4697,21 @@ const Imp = (() => {
           + kv('Produtos removidos / órfãos', Util.fNum(s.produtosRemovidos)+' / '+Util.fNum(s.produtosOrfaos))
           + kv('Eventos gerados', Util.fNum(s.eventosGerados))
           + kv('Registros retroativos', Util.fNum(s.retroativas))
+          + kv('Marcos de fluxo lidos', Util.fNum(s.marcosLidos||0))
+          + kv('Trajetórias reconstruídas', Util.fNum(s.ncrsReconstruidas||0))
+          + kv('Movimentos reconstruídos', Util.fNum(s.movimentosReconstruidos||0))
+          + kv('Data da foto', Util.fDateTime(s.dataFoto||s.dataArquivo)
+                + ' <span class="badge ord">' + esc(s.dataFotoOrigem||'arquivo') + '</span>')
           + kv('Backup criado', s.backup?('<span class="mono small">'+esc(s.backup)+'</span>'):'—'))}</div></div>
+        ${(s.marcosDetectados||[]).length ? `<div style="margin-top:14px">${card('Colunas de marco reconhecidas neste arquivo',
+            'a passagem por estas etapas foi lida da própria linha da NCR',
+            '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Coluna do Excel</th><th style="width:110px">Tipo</th>'
+            + '<th style="width:190px">Etapa</th><th class="num" style="width:70px">Ordem</th><th style="width:230px">Responsável</th></tr></thead><tbody>'
+            + s.marcosDetectados.map(m => '<tr><td class="small mono">'+esc(m.col)+'</td><td class="small">'+esc(m.tipo)+'</td>'
+              + '<td class="small"><b>'+esc(m.etapa||'—')+'</b>'+(m.noFluxo?'':' <span class="badge warn" title="etapa citada apenas nas colunas datadas; a ordem foi inferida pelo código numérico">inferida</span>')+'</td>'
+              + '<td class="num small">'+(m.ordem==null?'—':m.ordem)+'</td>'
+              + '<td class="small muted">'+esc(m.resp||'—')+'</td></tr>').join('')
+            + '</tbody></table></div>')}</div>` : ''}
         ${s.erros.length||s.avisos.length ? '<div style="margin-top:14px"><b class="small">Erros e avisos</b><pre class="log">'
            + esc(s.erros.concat(s.avisos.map(a => '⚠ '+a)).join('\n')) + '</pre></div>' : ''}`});
   }
@@ -4283,7 +4829,21 @@ const Conf = (() => {
   function render(host){
     const cfg = DB.cfg();
     const inf = Store.info();
-    const desc = Array.from(Flow.desconhecidos.entries()).filter(([s]) => Flow.ordemDe(s) == null);
+    const desc = Array.from(Flow.desconhecidos.entries()).filter(([s]) => Flow.ordemInferida(s) == null);
+    /* marcos reconhecidos na importacao mais recente que teve algum */
+    const ultMarcos = (DB.all().importacoes || []).find(i => (i.marcosDetectados||[]).length);
+    const marcosCard = ultMarcos ? `<div class="tbl-wrap" style="margin-top:12px"><table class="tbl"><thead><tr>
+        <th>Coluna reconhecida no Excel</th><th style="width:110px">Tipo</th><th style="width:200px">Etapa</th>
+        <th class="num" style="width:70px">Ordem</th><th style="width:240px">Responsável</th></tr></thead><tbody>`
+      + ultMarcos.marcosDetectados.map(m => '<tr><td class="small mono">'+esc(m.col)+'</td>'
+        + '<td class="small">'+esc(m.tipo)+'</td>'
+        + '<td class="small"><b>'+esc(m.etapa||'—')+'</b>'
+        + (m.noFluxo ? '' : ' <span class="badge warn" title="etapa citada apenas nas colunas datadas do export; a ordem foi inferida pelo código numérico do rótulo">ordem inferida</span>')+'</td>'
+        + '<td class="num small">'+(m.ordem==null?'—':m.ordem)+'</td>'
+        + '<td class="small muted">'+esc(m.resp||'—')+'</td></tr>').join('')
+      + '</tbody></table></div>'
+      + '<div class="small muted" style="margin-top:6px">Reconhecidas em <b>'+esc(ultMarcos.arquivo)+'</b>.</div>'
+      : '<div class="note small" style="margin-top:12px">Nenhuma coluna de marco reconhecida ainda — importe um Excel para ver a lista.</div>';
     const c = DB.contagem();
     host.innerHTML = `
       <div class="tabs">
@@ -4340,6 +4900,21 @@ const Conf = (() => {
             <button class="btn ghost" id="fReset">Restaurar fluxo padrão</button></div>
           <div class="note small" style="margin-top:12px">Status com a <b>mesma ordem</b> representam caminhos paralelos: a troca entre eles é classificada como <b>movimentação lateral</b>.
           Alterar o fluxo <b>não apaga</b> o histórico já registrado; as classificações passam a valer para as próximas importações.</div>`)}
+        <div style="margin-top:14px">${card('Reconstrução do histórico pelas colunas datadas',
+          'colunas do export que registram a passagem por etapas anteriores', `
+          <label class="ms-opt" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;display:inline-flex">
+            <input type="checkbox" id="pRecon" ${cfg.reconstruirHistorico !== false ? 'checked' : ''}>
+            <span>Ler as colunas datadas e reconstruir a trajetória já na primeira importação</span></label>
+          <label class="ms-opt" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;display:inline-flex;margin-left:8px">
+            <input type="checkbox" id="pFotoConteudo" ${cfg.dataFotoDoConteudo !== false ? 'checked' : ''}>
+            <span>Deduzir a data da foto do conteúdo do export</span></label>
+          ${marcosCard}
+          <div class="note small" style="margin-top:12px">Exports de NCR costumam trazer, na própria linha, as datas em que a NCR
+          avançou, foi rejeitada, aprovada ou encerrada em cada etapa. Sem ler essas colunas o histórico só começaria na primeira
+          importação e todo o caminho já percorrido seria perdido. As colunas são reconhecidas pelo <b>padrão do cabeçalho</b> —
+          nunca por lista fixa nem pelo nome do arquivo.
+          A <b>chegada</b> numa etapa raramente é datada pelo export: nesses casos ela é registrada na mesma data da saída e
+          marcada como <b>estimada</b>, e o intervalo sem informação fica fora das médias de tempo por etapa.</div>`)}</div>
       </div>
 
       <div class="tabpane" id="cp-aging">
@@ -4448,6 +5023,17 @@ const Conf = (() => {
         cfg.statusFinais = finais;
         recalcularFechadas();
         salvarCfg('Fluxo salvo com '+novo.length+' status.').then(() => UI.render('config'));
+      };
+      const cbR = g('pRecon'), cbF = g('pFotoConteudo');
+      if(cbR) cbR.onchange = e => {
+        cfg.reconstruirHistorico = e.target.checked;
+        salvarCfg(e.target.checked
+          ? 'Reconstrução de histórico ativada — vale para as próximas importações.'
+          : 'Reconstrução de histórico desativada: o histórico passará a começar na importação.');
+      };
+      if(cbF) cbF.onchange = e => {
+        cfg.dataFotoDoConteudo = e.target.checked;
+        salvarCfg(e.target.checked ? 'Data da foto será deduzida do conteúdo do export.' : 'Data da foto voltará a vir do arquivo.');
       };
       g('fReset').onclick = async () => {
         if(!await UI.confirmar('Restaurar fluxo padrão','O fluxo voltará à configuração original de 22 status. O histórico é preservado.','Restaurar')) return;

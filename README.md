@@ -45,8 +45,23 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
   Arquivo idêntico é ignorado; mesmo nome com conteúdo novo é reprocessado.
 - **Atualização incremental**: insere NCRs novas, atualiza as existentes campo a campo e
   preserva todo o histórico anterior.
-- **Histórico construído a partir da primeira leitura**: a primeira aparição de uma NCR é
-  registrada como *Estado inicial conhecido*; daí em diante só o que muda vira evento.
+- **Histórico reconstruído já na primeira leitura**: exports de NCR normalmente trazem, na
+  própria linha, as datas em que a NCR avançou, foi rejeitada, aprovada ou encerrada em cada
+  etapa (`Data avanço 2.1 - …`, `Data da rejeição 7.2 - TA`, `CEDOC Closure Data`, …). Essas
+  colunas são reconhecidas pelo **padrão do cabeçalho** — nunca por lista fixa nem pelo nome
+  do arquivo — e a trajetória completa entra no banco na primeira importação, com a data e o
+  responsável registrados na planilha. Daí em diante só o que muda entre duas exportações
+  vira evento novo.
+  - Etapas citadas apenas nessas colunas e ausentes da coluna *Status* (ex.: `7.2 - TA`) têm a
+    ordem **inferida pelo código numérico** do rótulo e aparecem com borda tracejada no fluxograma.
+  - Quando o export data apenas a **saída** de uma etapa, a chegada é registrada na mesma data e
+    marcada como **estimada**; esse intervalo sem informação fica fora das médias por etapa.
+  - A lista de colunas reconhecidas fica visível em **Configurações → Fluxo e status**, onde a
+    reconstrução também pode ser desligada.
+- **Data da "foto" deduzida do conteúdo**: quando o export traz o tempo de tramitação, a data da
+  exportação é calculada a partir de *data de criação + dias de tramitação* (mediana das linhas),
+  em vez da data do arquivo — que muda ao copiar ou baixar novamente. O tempo no status atual vem
+  da coluna de *tempo mais recente*, quando existe.
 - **Classificação automática das movimentações**: avanço, retorno, movimentação lateral,
   fechamento, reabertura e permanência (que não gera evento).
 - **Módulos**: Dashboard, NCRs, Produtos, Aging, Análise de Fluxo, Histórico, Importações,
