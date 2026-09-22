@@ -64,6 +64,13 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
   da coluna de *tempo mais recente*, quando existe.
 - **Classificação automática das movimentações**: avanço, retorno, movimentação lateral,
   fechamento, reabertura e permanência (que não gera evento).
+- **Fluxo gráfico de cada NCR, em duas leituras** (aba *Fluxo gráfico* no detalhe):
+  - **Trajetória** (padrão): um passo por linha, na ordem em que aconteceram, com data,
+    tempo de permanência naquela passagem e contador de reincidência. Como toda seta liga
+    apenas linhas vizinhas, nenhuma cruza outra — a ordem é a própria leitura de cima para baixo.
+  - **Mapa do fluxo**: todas as etapas, inclusive as não percorridas. Cada seta recebe uma
+    faixa exclusiva (um vão entre colunas ou uma faixa sob a grade) e nunca passa por cima de
+    uma caixa; os números de passo se afastam sozinhos quando cairiam um sobre o outro.
 - **Recortes (dimensões) com multisseleção**: colunas como `SBR`, `SBY` e `Bigramas` viram
   filtros próprios, presentes em todas as telas de análise.
   - A coluna de cada recorte é achada pelo **cabeçalho**; quando o export usa outro nome, ela é

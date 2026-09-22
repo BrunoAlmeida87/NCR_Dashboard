@@ -4254,19 +4254,23 @@ const Tabela = (() => {
 
 /* ============================ Detalhe da NCR ============================ */
 const Detalhe = (() => {
+  /* a escolha entre trajetoria e mapa vale enquanto o usuario navega */
+  let modoFluxo = 'traj';
   function sequencia(rec){
     const ev = DB.eventos(rec.key).filter(Flow.isFluxoEvt);
     const out = ev.map(e => ({status:e.para, data:e.data, cls:e.cls, de:e.de, estimado:e.estimado, obs:e.obs}));
     if(!out.length && rec.status) out.push({status:rec.status, data:rec.primeiraVez, cls:'INICIAL'});
     return out;
   }
-  /* ----- fluxograma ----- */
-  function flowSVG(rec){
+  /* ----- grade comum as duas visoes -----
+     As colunas sao as etapas do fluxo; dentro de cada uma ficam os status
+     configurados. Status que so aparecem nas colunas datadas do export
+     ("7.2 - TA") entram na coluna da ordem inferida, para o caminho nao
+     ficar partido. */
+  function grade(rec){
     const byOrd = Flow.statusPorOrdem();
     const ordens = Array.from(byOrd.keys()).sort((a,b) => a-b);
     const seq = sequencia(rec);
-    /* etapas que aparecem so nas colunas datadas do export (ex.: "7.2 - TA")
-       entram na coluna da ordem inferida, para o caminho nao ficar partido */
     const noFluxo = new Set();
     byOrd.forEach(lst => lst.forEach(st => noFluxo.add(Util.norm(st))));
     const fora = [], extras = new Map();
@@ -4283,50 +4287,195 @@ const Detalhe = (() => {
     const colunas = ordens.map(o => ({ordem:o, titulo:Flow.etapa(o),
                                       status:byOrd.get(o).slice().concat(extras.get(o) || [])}));
     if(fora.length) colunas.push({ordem:null, titulo:'Fora do fluxo', status:fora});
-    const NW = 172, NH = 28, VG = 9, HG = 48, PX = 16, PY = 46;
+    const colDe = new Map();
+    colunas.forEach((c,i) => c.status.forEach(s => colDe.set(Util.strVal(s), i)));
+    return {seq, colunas, colDe, descobertos};
+  }
+  const CORES = {AVANCO:'var(--good)', RETORNO:'var(--critical)', LATERAL:'var(--warning)',
+                 FECHAMENTO:'var(--s7)', REABERTURA:'var(--serious)', INDEFINIDA:'var(--muted)',
+                 INICIAL:'var(--s1)', PERMANENCIA:'var(--muted)'};
+  function marcadores(){
+    let d = '<defs>';
+    Object.keys(CORES).forEach(k => {
+      d += `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill:${CORES[k]}"/></marker>`;
+    });
+    return d + '</defs>';
+  }
+  const svgWrap = (W,H,g) => `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet"
+      style="max-width:${W}px;height:auto;display:block">${g}</svg>`;
+  /* polilinha ortogonal com cantos arredondados: as setas viram trilhos, e
+     trilho e facil de seguir com o olho mesmo quando um cruza o outro */
+  function ortho(pts, r){
+    const p = [];
+    pts.forEach(q => { const u = p[p.length-1]; if(!u || Math.hypot(u[0]-q[0], u[1]-q[1]) > 0.5) p.push(q); });
+    if(p.length < 2) return '';
+    let d = `M${p[0][0].toFixed(1)},${p[0][1].toFixed(1)}`;
+    for(let i = 1; i < p.length-1; i++){
+      const [px,py] = p[i-1], [cx,cy] = p[i], [nx,ny] = p[i+1];
+      const d1 = Math.hypot(cx-px, cy-py), d2 = Math.hypot(nx-cx, ny-cy);
+      const rr = Math.max(1, Math.min(r, d1/2, d2/2));
+      d += ` L${(cx+(px-cx)/d1*rr).toFixed(1)},${(cy+(py-cy)/d1*rr).toFixed(1)}`
+         + ` Q${cx.toFixed(1)},${cy.toFixed(1)} ${(cx+(nx-cx)/d2*rr).toFixed(1)},${(cy+(ny-cy)/d2*rr).toFixed(1)}`;
+    }
+    const z = p[p.length-1];
+    return d + ` L${z[0].toFixed(1)},${z[1].toFixed(1)}`;
+  }
+  const dur = (a,b) => (a && b) ? Math.max(0, new Date(b) - new Date(a)) : null;
+
+  /* ----- visao 1: trajetoria (ordem no eixo vertical) -----
+     Uma linha por passo, na ordem em que aconteceu. Como toda seta liga
+     linhas vizinhas, nenhuma pode cruzar outra nem passar por cima de uma
+     caixa — o problema de leitura do mapa some por construcao. O eixo
+     horizontal continua sendo a etapa do fluxo, entao ainda da para ver a
+     NCR indo e voltando pelas fases. */
+  function trajSVG(rec){
+    const {seq, colunas, colDe, descobertos} = grade(rec);
+    if(!seq.length) return semDados('Sem trajetória registrada para esta NCR');
+    const NW = 158, NH = 30, HG = 14, RH = 66, GUT = 104, PY = 44, PB = 16;
+    const W = GUT + colunas.length*NW + (colunas.length-1)*HG + 16;
+    const H = PY + seq.length*RH + PB;
+    const colX = i => GUT + i*(NW+HG);
+    const vis = rec.visitas || {};
+    const ocorrencia = new Map();      /* quantas vezes o status ja apareceu ate aqui */
+    let g = marcadores();
+    /* cabecalhos das etapas */
+    colunas.forEach((c,i) => {
+      const x = colX(i);
+      g += `<rect x="${x}" y="12" width="${NW}" height="22" rx="6" style="fill:var(--surface-3)"/>`;
+      const t = c.titulo.length > 22 ? c.titulo.slice(0,21)+'…' : c.titulo;
+      g += `<text x="${x+NW/2}" y="27" text-anchor="middle" style="fill:var(--text-2);font-size:10.5px;font-weight:600">${esc(t)}</text>`;
+    });
+    g += `<text x="12" y="27" style="fill:var(--muted);font-size:10px;font-weight:600">PASSO</text>`;
+    /* ligacoes: sempre de uma linha para a seguinte */
+    for(let i = 1; i < seq.length; i++){
+      const a = seq[i-1], b = seq[i];
+      const ca = colDe.get(Util.strVal(a.status)), cb = colDe.get(Util.strVal(b.status));
+      if(ca == null || cb == null) continue;
+      const cls = b.cls || 'INDEFINIDA';
+      const cor = CORES[cls] || 'var(--muted)';
+      const x1 = colX(ca) + NW/2, x2 = colX(cb) + NW/2;
+      const y1 = PY + (i-1)*RH + NH, y2 = PY + i*RH;
+      const ym = (y1 + y2) / 2;
+      const d = ortho([[x1,y1],[x1,ym],[x2,ym],[x2,y2]], 8);
+      g += `<path d="${d}" fill="none" style="stroke:${cor};opacity:.9" stroke-width="2"`
+         + `${b.estimado ? ' stroke-dasharray="5 4"' : ''} marker-end="url(#ar-${cls})"><title>`
+         + `${esc(Flow.LABEL[cls]||cls)} — ${Util.fDate(b.data)}: ${esc(a.status)} → ${esc(b.status)}`
+         + `${b.estimado ? '\n(data estimada: o export registra apenas a saída da etapa)' : ''}`
+         + `${b.obs ? '\n'+esc(b.obs) : ''}</title></path>`;
+      if(Math.abs(x2 - x1) > 40){
+        const lbl = (Flow.ICON[cls]||'') + ' ' + (Flow.LABEL[cls]||cls);
+        /* contorno na cor do fundo para o rotulo nao brigar com a faixa nem
+           com a propria linha por baixo dele */
+        g += `<text x="${(x1+x2)/2}" y="${ym-6}" text-anchor="middle" style="fill:${cor};font-size:9.5px;font-weight:700;`
+           + `stroke:var(--surface);stroke-width:3;paint-order:stroke">${esc(lbl)}</text>`;
+      }
+    }
+    /* linhas */
+    seq.forEach((s,i) => {
+      const ci = colDe.get(Util.strVal(s.status));
+      const y = PY + i*RH;
+      const cls = s.cls || 'INDEFINIDA';
+      const cor = CORES[cls] || 'var(--muted)';
+      const ehAtual = i === seq.length-1;
+      const n = (ocorrencia.get(Util.strVal(s.status)) || 0) + 1;
+      ocorrencia.set(Util.strVal(s.status), n);
+      /* faixa da linha, para o olho nao perder o alinhamento na tela larga */
+      if(i % 2 === 0) g += `<rect class="faixa" x="0" y="${y-((RH-NH)/2)}" width="${W}" height="${RH}" rx="6" style="fill:var(--surface-3);opacity:.6"/>`;
+      g += `<circle class="passo" cx="20" cy="${y+NH/2}" r="10" style="fill:${cor}"/>`;
+      g += `<text x="20" y="${y+NH/2+3.5}" text-anchor="middle" style="fill:#fff;font-size:10px;font-weight:700">${i+1}</text>`;
+      g += `<text x="36" y="${y+NH/2-2}" style="fill:var(--text-2);font-size:10px">${Util.fDate(s.data)}</text>`;
+      const espera = i < seq.length-1 ? dur(s.data, seq[i+1].data) : null;
+      const parada = i === seq.length-1 && !rec.fechada ? Util.days(s.data) : null;
+      const info = espera != null ? (espera >= Util.DAY ? Math.round(espera/Util.DAY)+' d aqui'
+                                     : (seq[i+1].estimado ? 'sem intervalo' : 'no mesmo dia'))
+                 : parada != null ? 'há '+parada+' d' : '';
+      if(info) g += `<text x="36" y="${y+NH/2+9}" style="fill:var(--muted);font-size:9px">${esc(info)}</text>`;
+      if(ci == null) return;
+      const x = colX(ci);
+      const desc = descobertos.has(s.status);
+      const fill = ehAtual ? (rec.fechada ? 'rgba(12,163,12,.16)' : 'var(--accent-wash)') : 'var(--surface-3)';
+      const stroke = ehAtual ? (rec.fechada ? 'var(--good)' : 'var(--accent)') : cor;
+      const label = String(s.status).length > 21 ? String(s.status).slice(0,20)+'…' : String(s.status);
+      const v = vis[s.status];
+      g += `<g><title>${esc(s.status)} — passo ${i+1} de ${seq.length}, ${Util.fDateTime(s.data)}`
+         + `${n > 1 ? '\n'+n+'ª passagem por esta etapa' : ''}`
+         + `${v && v.n > 1 ? '\n'+v.n+' passagens no total' : ''}`
+         + `${desc ? '\netapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}`
+         + `${s.obs ? '\n'+esc(s.obs) : ''}</title>`;
+      g += `<rect class="no" x="${x}" y="${y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}"`
+         + ` stroke-width="${ehAtual ? 2 : 1.4}"${desc ? ' stroke-dasharray="4 3"' : ''}/>`;
+      g += `<text x="${x+10}" y="${y+NH/2+4}" style="fill:var(--text);font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
+      if(n > 1)
+        g += `<circle cx="${x+NW-14}" cy="${y+NH/2}" r="9" style="fill:var(--s4)"/>`
+           + `<text x="${x+NW-14}" y="${y+NH/2+3.5}" text-anchor="middle" style="fill:#fff;font-size:9px;font-weight:700">${n}ª</text>`;
+      g += '</g>';
+    });
+    return svgWrap(W, H, g);
+  }
+
+  /* ----- visao 2: mapa do fluxo -----
+     Mostra tambem as etapas nao percorridas. Aqui as setas precisam
+     atravessar a grade, entao cada uma recebe uma faixa exclusiva: um
+     corredor vertical no vao entre duas colunas, ou uma faixa horizontal
+     abaixo da grade. Duas setas nunca dividem a mesma faixa, e nenhuma
+     corre por cima de uma caixa. */
+  function flowSVG(rec){
+    const {seq, colunas, colDe, descobertos} = grade(rec);
+    const NW = 172, NH = 28, VG = 9, HG = 74, PX = 16, PY = 46;
     const maxRows = Math.max.apply(null, colunas.map(c => c.status.length));
     const W = PX*2 + colunas.length*NW + (colunas.length-1)*HG;
     const gridBot = PY + maxRows*(NH+VG);
-    const H = gridBot + 74;      /* folga para o canal das setas longas */
     const pos = new Map();
     colunas.forEach((c,i) => c.status.forEach((s,j) => {
       pos.set(s, {x: PX + i*(NW+HG), y: PY + j*(NH+VG), col:i, row:j});
     }));
     const vis = rec.visitas || {};
     const atual = rec.status;
-    const CORES = {AVANCO:'var(--good)', RETORNO:'var(--critical)', LATERAL:'var(--warning)',
-                   FECHAMENTO:'var(--s7)', REABERTURA:'var(--serious)', INDEFINIDA:'var(--muted)', INICIAL:'var(--s1)'};
-    let defs = '<defs>';
-    Object.keys(CORES).forEach(k => {
-      defs += `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-        <path d="M0,0 L10,5 L0,10 z" style="fill:${CORES[k]}"/></marker>`;
-    });
-    defs += '</defs>';
-    let g = defs;
-    /* cabecalhos das colunas */
+    /* ---- distribui as faixas antes de desenhar, para saber a altura ---- */
+    const arestas = [];
+    const usoCorredor = new Map();
+    let faixasBaixo = 0;
+    for(let i = 1; i < seq.length; i++){
+      const pa = pos.get(seq[i-1].status), pb = pos.get(seq[i].status);
+      if(!pa || !pb) continue;
+      const dc = pb.col - pa.col;
+      const e = {i, a:seq[i-1], b:seq[i], pa, pb, dc};
+      if(dc === 1 || dc === 0 || dc === -1){
+        /* cabe num corredor vertical: o vao a direita da coluna de origem
+           (avanco e permanencia) ou o vao a esquerda dela (retorno curto) */
+        const vao = dc === -1 ? pb.col : pa.col;
+        const n = usoCorredor.get(vao) || 0;
+        usoCorredor.set(vao, n+1);
+        e.tipo = 'corredor'; e.vao = vao; e.faixa = n;
+      } else {
+        e.tipo = 'baixo'; e.faixa = faixasBaixo++;
+      }
+      arestas.push(e);
+    }
+    /* o vao a direita da ultima coluna so existe se alguma seta precisar dele */
+    const usaBorda = arestas.some(e => e.tipo === 'corredor' && e.vao === colunas.length-1);
+    const WT = W + (usaBorda ? 72 : 0);
+    const H = gridBot + (faixasBaixo ? 24 + faixasBaixo*15 : 16);
+    let g = marcadores();
     colunas.forEach((c,i) => {
       const x = PX + i*(NW+HG);
       g += `<rect x="${x}" y="14" width="${NW}" height="22" rx="6" style="fill:var(--surface-3)"/>`;
       const t = c.titulo.length > 26 ? c.titulo.slice(0,25)+'…' : c.titulo;
       g += `<text x="${x+NW/2}" y="29" text-anchor="middle" style="fill:var(--text-2);font-size:10.5px;font-weight:600">${esc(t)}</text>`;
-      if(i < colunas.length-1)
-        g += `<path d="M${x+NW+6},25 h${HG-12}" style="stroke:var(--grid)" stroke-width="1" stroke-dasharray="3 3"/>`;
     });
-    /* nos */
     colunas.forEach(c => c.status.forEach(s => {
       const p = pos.get(s), v = vis[s];
       const visitado = !!v, ehAtual = Util.strVal(s) === Util.strVal(atual);
       const fill = ehAtual ? (rec.fechada ? 'rgba(12,163,12,.16)' : 'var(--accent-wash)') : visitado ? 'var(--surface-3)' : 'var(--surface)';
       const stroke = ehAtual ? (rec.fechada ? 'var(--good)' : 'var(--accent)') : visitado ? 'var(--axis)' : 'var(--grid)';
-      const sw = ehAtual ? 2 : 1;
       const ink = visitado || ehAtual ? 'var(--text)' : 'var(--muted)';
       const label = s.length > 23 ? s.slice(0,22)+'…' : s;
       const dias = v && v.ms ? Math.round(v.ms/Util.DAY) : 0;
-      /* etapa vinda so das colunas datadas do export: borda tracejada */
       const desc = descobertos.has(s);
       g += `<g><title>${esc(s)}${visitado ? ' — '+v.n+' passagem(ns)'+(dias?', '+dias+' dia(s) acumulados':', tempo não informado pelo export') : ' — não percorrido'}`
          + `${desc ? ' · etapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}</title>`;
-      g += `<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${sw}"${desc?' stroke-dasharray="4 3"':''}/>`;
+      g += `<rect class="no" x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${ehAtual?2:1}"${desc?' stroke-dasharray="4 3"':''}/>`;
       if(ehAtual) g += `<rect x="${p.x}" y="${p.y+4}" width="3" height="${NH-8}" rx="2" style="fill:${rec.fechada?'var(--good)':'var(--accent)'}"/>`;
       g += `<text x="${p.x+10}" y="${p.y+NH/2+4}" style="fill:${ink};font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
       if(visitado && v.n > 1)
@@ -4335,52 +4484,63 @@ const Detalhe = (() => {
         g += `<text x="${p.x+NW-9}" y="${p.y+NH/2+4}" text-anchor="end" style="fill:var(--muted);font-size:9.5px">${dias}d</text>`;
       g += '</g>';
     }));
-    /* transicoes */
-    const usadas = new Map();
-    for(let i = 1; i < seq.length; i++){
-      const a = seq[i-1], b = seq[i];
-      const pa = pos.get(a.status), pb = pos.get(b.status);
-      if(!pa || !pb) continue;
-      const cls = b.cls || 'INDEFINIDA';
-      const cor = CORES[cls] || 'var(--muted)';
-      const ek = a.status+'>'+b.status;
-      const rep = usadas.get(ek) || 0;
-      usadas.set(ek, rep+1);
-      const off = rep*7;
-      let d, mx, my;
-      const ay = pa.y+NH/2, by = pb.y+NH/2;
-      const salto = Math.abs(pb.col - pa.col);
-      if(pb.col > pa.col && salto === 1){
-        const x1 = pa.x+NW, x2 = pb.x;
-        const c = Math.max(22, (x2-x1)/2);
-        d = `M${x1},${ay} C${x1+c},${ay+off} ${x2-c},${by+off} ${x2},${by}`;
-        mx = (x1+x2)/2; my = (ay+by)/2 + off;
-      } else if(pb.col > pa.col){
-        /* salto de mais de uma coluna: desce para um canal livre abaixo da
-           grade e sobe no destino, para a seta nao cruzar caixas no caminho */
-        const x1 = pa.x+NW/2, x2 = pb.x+NW/2;
-        const via = gridBot + 16 + off;
-        d = `M${x1},${pa.y+NH} C${x1},${via} ${x1},${via} ${x1+26},${via}`
-          + ` L${x2-26},${via} C${x2},${via} ${x2},${via} ${x2},${pb.y+NH}`;
-        mx = (x1+x2)/2; my = via;
-      } else if(pb.col < pa.col){
-        const x1 = pa.x, x2 = pb.x+NW;
-        const dip = Math.max(ay, by) + 26 + off;
-        d = `M${x1},${ay} C${x1-40},${ay} ${x1-40},${dip} ${(x1+x2)/2},${dip} C${x2+40},${dip} ${x2+40},${by} ${x2},${by}`;
-        mx = (x1+x2)/2; my = dip;
-      } else {
-        const x1 = pa.x+NW, bump = 26+off;
-        d = `M${x1},${ay} C${x1+bump},${ay} ${x1+bump},${by} ${pb.x+NW},${by}`;
-        mx = x1 + bump*0.7; my = (ay+by)/2;
+    /* x do vao a direita da coluna, na faixa pedida */
+    const vaoDe = (col, faixa) => PX + col*(NW+HG) + NW + 14 + (faixa % 4)*15;
+    /* numeros de passo colados uns nos outros nao dizem nada: depois de
+       traçar, quem ficou por cima de outro desce ate caber */
+    const badges = [];
+    function acomodar(x, y){
+      let yy = y;
+      for(let k = 0; k < badges.length; k++){
+        const b = badges[k];
+        if(Math.abs(b.x - x) < 19 && Math.abs(b.y - yy) < 19){ yy = b.y + 19; k = -1; }
       }
-      g += `<path d="${d}" fill="none" style="stroke:${cor};opacity:.85" stroke-width="2"${b.estimado?' stroke-dasharray="5 4"':''} marker-end="url(#ar-${cls})"><title>${esc(Flow.LABEL[cls]||cls)} — ${Util.fDate(b.data)}: ${esc(a.status)} → ${esc(b.status)}${b.estimado?' (data estimada: o export registra apenas a saída da etapa)':''}${b.obs?'\n'+esc(b.obs):''}</title></path>`;
-      g += `<circle cx="${mx}" cy="${my}" r="8.5" style="fill:var(--surface);stroke:${cor}" stroke-width="1.5"/>`;
-      g += `<text x="${mx}" y="${my+3.5}" text-anchor="middle" style="fill:var(--text-2);font-size:9px;font-weight:700">${i}</text>`;
+      badges.push({x, y:yy});
+      return yy;
     }
-    /* escala para caber na largura disponivel em vez de forcar rolagem
-       horizontal, mas sem ampliar alem do tamanho natural */
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet"
-      style="max-width:${W}px;height:auto;display:block">${g}</svg>`;
+    arestas.forEach(e => {
+      const cls = e.b.cls || 'INDEFINIDA';
+      const cor = CORES[cls] || 'var(--muted)';
+      const nVao = e.tipo === 'corredor' ? usoCorredor.get(e.vao) : 1;
+      let d, mx, my;
+      if(e.tipo === 'corredor'){
+        const xc = vaoDe(e.vao, e.faixa);
+        /* saidas escalonadas: duas setas deixando a mesma caixa nao podem
+           sair do mesmo ponto, senao correm juntas no primeiro trecho */
+        const off = nVao > 1 ? (e.faixa - (nVao-1)/2) * Math.min(7, (NH-8)/nVao) : 0;
+        const y1 = e.pa.y + NH/2 + off, y2 = e.pb.y + NH/2 + off;
+        const x1 = e.dc === -1 ? e.pa.x : e.pa.x + NW;
+        const x2 = e.dc === 1 ? e.pb.x : e.pb.x + NW;
+        d = ortho([[x1,y1],[xc,y1],[xc,y2],[x2,y2]], 7);
+        mx = xc; my = Math.abs(y2-y1) < 14 ? y1 - 13 : (y1+y2)/2;
+      } else {
+        /* salto longo: sai pelo lado, desce por um vao (nunca por dentro de
+           uma coluna, senao a linha passa por cima das caixas de baixo),
+           corre numa faixa livre sob a grade e sobe pelo vao do destino */
+        const yc = gridBot + 15 + e.faixa*15;
+        const frente = e.dc > 0;
+        const y1 = e.pa.y + NH/2, y2 = e.pb.y + NH/2;
+        const x1 = frente ? e.pa.x + NW : e.pa.x;
+        const x2 = frente ? e.pb.x : e.pb.x + NW;
+        const g1 = vaoDe(frente ? e.pa.col : e.pa.col - 1, e.faixa);
+        const g2 = vaoDe(frente ? e.pb.col - 1 : e.pb.col, e.faixa);
+        d = ortho([[x1,y1],[g1,y1],[g1,yc],[g2,yc],[g2,y2],[x2,y2]], 9);
+        const sx = g2 > g1 ? 1 : -1;
+        mx = g1 + sx*Math.min(34 + e.faixa*30, Math.abs(g2-g1)/2);
+        my = yc;
+      }
+      g += `<path d="${d}" fill="none" style="stroke:${cor};opacity:.9" stroke-width="2"`
+         + `${e.b.estimado ? ' stroke-dasharray="5 4"' : ''} marker-end="url(#ar-${cls})"><title>`
+         + `Passo ${e.i} — ${esc(Flow.LABEL[cls]||cls)}, ${Util.fDate(e.b.data)}: ${esc(e.a.status)} → ${esc(e.b.status)}`
+         + `${e.b.estimado ? '\n(data estimada: o export registra apenas a saída da etapa)' : ''}`
+         + `${e.b.obs ? '\n'+esc(e.b.obs) : ''}</title></path>`;
+      const by = acomodar(mx, my);
+      if(Math.abs(by - my) > 1)
+        g += `<path d="M${mx},${my} L${mx},${by}" style="stroke:${cor};opacity:.45" stroke-width="1" stroke-dasharray="2 2"/>`;
+      g += `<circle class="passo" cx="${mx}" cy="${by}" r="9" style="fill:${cor};stroke:var(--surface)" stroke-width="1.5"/>`;
+      g += `<text x="${mx}" y="${by+3.5}" text-anchor="middle" style="fill:#fff;font-size:9.5px;font-weight:700">${e.i}</text>`;
+    });
+    return svgWrap(WT, H, g);
   }
   function legendaFluxo(){
     const it = [['AVANCO','var(--good)'],['RETORNO','var(--critical)'],['LATERAL','var(--warning)'],
@@ -4470,7 +4630,14 @@ const Detalhe = (() => {
         <div style="margin-top:14px">${card('Últimas movimentações','', timeline(rec, 6))}</div>
       </div>
       <div class="tabpane" id="tp-fluxo">
-        <div class="flowmap">${flowSVG(rec)}</div>
+        <div class="hstack" style="gap:6px;margin-bottom:10px">
+          <button class="btn sm${modoFluxo==='traj'?' primary':''}" data-fx="traj"
+            title="Um passo por linha, na ordem em que aconteceram">Trajetória</button>
+          <button class="btn sm${modoFluxo==='mapa'?' primary':''}" data-fx="mapa"
+            title="Todas as etapas do fluxo, inclusive as não percorridas">Mapa do fluxo</button>
+          <span class="muted small" id="fxHint"></span>
+        </div>
+        <div class="flowmap" id="fxHost"></div>
         ${legendaFluxo()}
         <div style="margin-top:14px">${card('Tempo por etapa percorrida','acumulado', tabelaVisitas(rec))}</div>
       </div>
@@ -4486,6 +4653,17 @@ const Detalhe = (() => {
       body,
       footer: '<button class="btn" id="dtExp">Exportar NCR (JSON)</button><button class="btn" data-close>Fechar</button>'
     });
+    function desenharFluxo(){
+      const host = $('#fxHost');
+      if(!host) return;
+      host.innerHTML = modoFluxo === 'mapa' ? flowSVG(rec) : trajSVG(rec);
+      $('#fxHint').textContent = modoFluxo === 'mapa'
+        ? 'Cada seta corre numa faixa própria; o número é a ordem do passo.'
+        : 'De cima para baixo, na ordem real; a coluna mostra em que etapa do fluxo cada passo caiu.';
+      $$('#modalBody [data-fx]').forEach(b => b.classList.toggle('primary', b.dataset.fx === modoFluxo));
+    }
+    desenharFluxo();
+    $$('#modalBody [data-fx]').forEach(b => b.onclick = () => { modoFluxo = b.dataset.fx; desenharFluxo(); });
     $$('#modalBody .tab').forEach(t => t.onclick = () => {
       $$('#modalBody .tab').forEach(x => x.classList.remove('active'));
       $$('#modalBody .tabpane').forEach(x => x.classList.remove('active'));
@@ -4533,7 +4711,7 @@ const Detalhe = (() => {
         + '<td>'+(p.ativo === false ? '<span class="badge crit">removido '+Util.fDate(p.removidoEm)+'</span>' : '<span class="badge new">ativo</span>')+'</td></tr>').join('')
       + '</tbody></table></div>';
   }
-  return {abrir, flowSVG, timeline, sequencia, legendaFluxo};
+  return {abrir, flowSVG, trajSVG, timeline, sequencia, legendaFluxo};
 })();
 
 /* ============================ Produtos ============================ */
