@@ -269,6 +269,41 @@ table.tbl .ncrid{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink
 .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:14px;box-shadow:var(--shadow)}
 .filters .f{min-width:150px}
 .filters .f.wide{min-width:250px;flex:1}
+.trk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;margin-bottom:16px}
+.trk{border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden}
+.trk-h{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.trk-h .ncrid{font-weight:600;font-size:12.5px}
+.trk-h .badge{margin-left:auto}
+.trk-b{padding:6px 10px 2px}
+.trk-f{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:7px 11px 9px;font-size:11px;color:var(--text-2)}
+.trk-f .right{margin-left:auto;font-size:10.5px}
+.trk-grp{display:flex;align-items:center;gap:9px;margin:4px 0 9px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.trk-grp b{font-size:13px}
+.rep-ctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.rep-ctl select{padding:5px 8px;width:auto;flex:none}
+.rep-ctl input[type=range]{flex:1 1 200px;min-width:160px;width:auto}
+.trk-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0 0 12px;font-size:11px;color:var(--text-2)}
+.trk-legend b{font-weight:600;color:var(--text)}
+.rep-ctl b{font-variant-numeric:tabular-nums;min-width:86px;text-align:right}
+.rep-wrap{border:1px solid var(--border);border-radius:11px;background:var(--surface);padding:10px;overflow-x:auto}
+.rep-wrap circle{transition:cx .18s linear,cy .18s linear}
+.fcue{display:none;align-items:center;gap:7px;margin-left:14px;padding:4px 11px;border-radius:20px;
+  border:1px solid var(--accent);background:var(--accent-wash);color:var(--accent);
+  font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.fcue.show{display:inline-flex}
+.fcue.mute{border-color:var(--border);background:var(--surface-3);color:var(--text-2);font-weight:500}
+.fcue i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.fcue:hover{filter:brightness(.97)}
+.fcue-pop{position:fixed;z-index:70;width:330px;max-width:calc(100vw - 24px);background:var(--surface);
+  border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.18);padding:12px;display:none}
+.fcue-pop.show{display:block}
+.fcue-pop h4{margin:0 0 8px;font-size:12.5px}
+.fcue-pop .lst{display:flex;flex-direction:column;gap:5px;max-height:240px;overflow:auto;margin-bottom:10px}
+.fcue-pop .lst .it{display:flex;align-items:center;gap:8px;font-size:12px;background:var(--surface-3);
+  border-radius:7px;padding:5px 8px}
+.fcue-pop .lst .it span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fcue-pop .lst .it b{cursor:pointer;color:var(--muted);font-size:14px;line-height:1}
+.fcue-pop .lst .it b:hover{color:var(--critical)}
 .active-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 
 /* multiselect */
@@ -371,6 +406,7 @@ pre.log{background:var(--surface-2);border:1px solid var(--border);border-radius
         <h1 id="viewTitle">Dashboard</h1>
         <div class="sub" id="viewSub">Visao geral das nao conformidades</div>
       </div>
+      <button class="fcue" id="filterCue" type="button" title="Ha filtros aplicados"></button>
       <div class="spacer"></div>
       <div class="search" style="max-width:300px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -387,6 +423,7 @@ pre.log{background:var(--surface-2);border:1px solid var(--border);border-radius
       <section class="view" id="v-produtos"></section>
       <section class="view" id="v-aging"></section>
       <section class="view" id="v-fluxo"></section>
+      <section class="view" id="v-fluxos"></section>
       <section class="view" id="v-historico"></section>
       <section class="view" id="v-importacoes"></section>
       <section class="view" id="v-arquivos"></section>
@@ -1160,6 +1197,20 @@ const Cfg = (() => {
     /* data da foto deduzida do conteudo (criacao + tempo de tramitacao) em vez
        da data do arquivo, que muda ao copiar ou baixar novamente */
     dataFotoDoConteudo: true,
+    /* recortes de alto nivel do parque de NCRs. A coluna de cada um e
+       procurada por alias; quando o export usa outro cabecalho, o usuario
+       aponta a coluna a mao em Configuracoes -> Dimensoes. */
+    dimensoes: [
+      {id:'sbr', rot:'SBR', alias:['sbr'], normalizar:'sbr', multi:false,
+       fixos:['SBR1','SBR2','SBR3','SBR4'],
+       ajuda:'Valores como "SBR 2", "sbr-02" e "2" caem no mesmo grupo. "SBRall" aparece quando o export traz alguma NCR marcada como comum a todos.'},
+      {id:'sby', rot:'SBY', alias:['sby'], normalizar:null, multi:false,
+       ajuda:'Nenhum dos exports lidos ate agora traz uma coluna SBY. Aponte a coluna correta aqui quando ela existir.'},
+      {id:'sistema', rot:'Sistemas (bigramas)', alias:['bigramas','bigrama','sistema','sistemas','system','systems'],
+       normalizar:null, multi:true,
+       ajuda:'Cada bigrama vira um filtro proprio: uma NCR com "ES, FP, ER, DP" entra nos quatro sistemas.'}
+    ],
+    dimensoesCol: {},                /* id da dimensao -> nome exato da coluna, quando escolhida a mao */
     retencaoBackups: 10,
     retencaoDias: 60,
     pastaImports: 'imports',
@@ -1185,6 +1236,7 @@ const Cfg = (() => {
     nivel:      ['nivel','level','nivel ncr'],
     critico:    ['critico','critical','criticidade'],
     sbr:        ['sbr','projeto','project','embarcacao','navio','unidade'],
+    sby:        ['sby'],
     sistema:    ['sistema','system','bigramas','bigrama'],
     subsistema: ['subsistema','subsystem','sub sistema'],
     descricao:  ['descricao','description','descricao da anomalia','texto'],
@@ -1599,11 +1651,19 @@ const DB = (() => {
 
   function reindex(){
     idx.histPorNcr = new Map();
-    for(const ev of d.historico){
+    /* Dois eventos podem cair no mesmo instante — a aprovação em 7.2 e o
+       fechamento que ela dispara, por exemplo. O desempate tem que ser a
+       ordem em que foram gravados (que é a ordem real dos fatos e a mesma
+       depois de salvar e recarregar); desempatar pelo id sorteado faria a
+       trajetória trocar de ordem a cada abertura da tela. */
+    const posicao = new Map();
+    for(let i = 0; i < d.historico.length; i++){
+      const ev = d.historico[i];
+      posicao.set(ev, i);
       if(!idx.histPorNcr.has(ev.ncr)) idx.histPorNcr.set(ev.ncr, []);
       idx.histPorNcr.get(ev.ncr).push(ev);
     }
-    idx.histPorNcr.forEach(l => l.sort((a,b) => Util.cmp(a.data,b.data) || Util.cmp(a.id,b.id)));
+    idx.histPorNcr.forEach(l => l.sort((a,b) => Util.cmp(a.data,b.data) || (posicao.get(a) - posicao.get(b))));
     idx.prodPorNcr = new Map(); idx.prodPorProduto = new Map();
     for(const k in d.produtos){
       const p = d.produtos[k];
@@ -2066,7 +2126,10 @@ const Marcos = (() => {
       mover(statusAtual, entrada, classe(atual, statusAtual), {
         obs: dr != null && dr > 0
           ? 'Status atual do export · há ' + Util.fDur(dr) + ' nesta situação (coluna "' + det.aux.recente + '")'
-          : 'Status atual do export · data de entrada estimada',
+          : dr === 0
+            ? 'Status atual do export · a coluna "' + det.aux.recente + '" marca 0 dias, que em NCR encerrada costuma significar "sem contagem"; '
+              + 'a entrada foi ancorada no último marco datado em vez da data da foto'
+            : 'Status atual do export · data de entrada estimada',
         estimado:true});
     } else if(atual){
       desde = entrada;
@@ -3070,15 +3133,110 @@ const Metrics = (() => {
   return {derive, resumo, contar, serieMensal, temposPorStatus, tempoAteFechamento, repeticoes, faixa, buscaCampo};
 })();
 
+/* ============================ Dimensões ============================
+   Recortes de alto nível do parque (SBR, SBY, sistemas/bigramas). A faceta
+   genérica já filtra qualquer coluna, mas tropeça em três coisas que estes
+   recortes exigem:
+   - o cabeçalho muda de export para export, então a coluna é achada por
+     alias e pode ser apontada à mão em Configurações;
+   - uma célula pode trazer vários valores ("ES, FP, ER, DP"), e cada um
+     precisa virar um filtro próprio, senão a combinação inteira vira um
+     valor só e some da lista;
+   - "SBR 2", "sbr-02" e "2" são o mesmo item e têm que cair no mesmo balde,
+     sem que os valores originais deixem de aparecer em Configurações.     */
+const Dim = (() => {
+  let cache = null;
+  const SEP = /\s*[;,]+\s*/;
+
+  function defs(){
+    const d = DB.cfg().dimensoes;
+    return Array.isArray(d) && d.length ? d : Cfg.PADRAO.dimensoes;
+  }
+  /* coluna escolhida a mao vence o alias; alias vence a ausencia */
+  function acharColuna(d, cols){
+    const manual = (DB.cfg().dimensoesCol || {})[d.id];
+    if(manual && cols.indexOf(manual) >= 0) return manual;
+    const al = (d.alias || []).map(Util.norm);
+    for(const c of cols) if(al.indexOf(Util.norm(c)) >= 0) return c;
+    return null;
+  }
+  function grupoSbr(v){
+    const n = Util.norm(v);
+    if(!n) return null;
+    if(/\b(all|todos|todas|geral|comum|common)\b/.test(n)) return 'SBRall';
+    let m = /\bsbr\s*-?\s*0*(\d{1,2})\b/.exec(n);
+    if(!m) m = /^0*(\d{1,2})$/.exec(n);
+    return m ? 'SBR' + (+m[1]) : null;
+  }
+  const NORM = {sbr: grupoSbr};
+  /* valores de uma celula, ja separados e agrupados */
+  function tokens(valor, d){
+    const bruto = Util.strVal(valor).trim();
+    if(!bruto) return [];
+    const partes = d.multi ? bruto.split(SEP) : [bruto];
+    const fn = NORM[d.normalizar] || null;
+    const out = [];
+    for(let i = 0; i < partes.length; i++){
+      const t = partes[i].trim();
+      if(!t) continue;
+      const v = (fn && fn(t)) || t;
+      if(out.indexOf(v) < 0) out.push(v);
+    }
+    return out;
+  }
+  function build(){
+    if(cache) return cache;
+    const list = DB.listaNcrs();
+    const cols = DB.campos();
+    cache = defs().map(d => {
+      const col = acharColuna(d, cols);
+      const cont = new Map(), brutos = new Map();
+      let preenchidas = 0;
+      if(col) for(const n of list){
+        const cru = Util.strVal(n.campos[col]).trim();
+        if(cru) brutos.set(cru, (brutos.get(cru) || 0) + 1);
+        const ts = tokens(n.campos[col], d);
+        if(ts.length) preenchidas++;
+        ts.forEach(t => cont.set(t, (cont.get(t) || 0) + 1));
+      }
+      const fixos = d.fixos || [];
+      const encontrados = Array.from(cont.entries())
+        .filter(([v]) => fixos.indexOf(v) < 0)
+        .map(([v,n]) => ({v, n, fixo:false}))
+        .sort((a,b) => b.n - a.n || Util.cmp(a.v, b.v));
+      /* SBR1..SBR4 ficam sempre na lista, mesmo zerados: o recorte existe
+         ainda que este export nao traga nenhuma NCR deles, e esconder a
+         opcao faria parecer que o filtro esta quebrado */
+      const valores = fixos.map(f => ({v:f, n:cont.get(f) || 0, fixo:true})).concat(encontrados);
+      return {id:d.id, rot:d.rot, ajuda:d.ajuda || '', multi:!!d.multi, normalizar:d.normalizar || null,
+              alias:(d.alias || []).slice(), fixos, col, valores, preenchidas,
+              distintos: cont.size, usados: valores.filter(x => x.n > 0).length,
+              brutos: Array.from(brutos.entries()).map(([v,n]) => ({v,n})).sort((a,b) => b.n - a.n || Util.cmp(a.v,b.v))};
+    });
+    return cache;
+  }
+  function invalidate(){ cache = null; }
+  const lista = () => build();
+  const get = id => build().filter(d => d.id === id)[0] || null;
+  /* dimensoes que valem uma caixa de filtro: coluna achada e algo dentro */
+  const disponiveis = () => build().filter(d => d.col && (d.usados > 0 || d.fixos.length));
+  const colunasUsadas = () => build().filter(d => d.col).map(d => d.col);
+  function tokensDe(rec, d){
+    if(!d || !d.col) return [];
+    return tokens((rec.campos || {})[d.col], d);
+  }
+  return {lista, get, disponiveis, colunasUsadas, tokensDe, tokens, invalidate, grupoSbr};
+})();
+
 /* ============================ FilterManager ============================ */
 const Filters = (() => {
-  const state = {texto:'', campos:{}, situacao:'todas', etapas:[], aging:[], dataDe:'', dataAte:'',
+  const state = {texto:'', campos:{}, dims:{}, situacao:'todas', etapas:[], aging:[], dataDe:'', dataAte:'',
                  produto:'', semMovDias:null, comRetorno:false, statusRapido:null};
   let cache = null, facetsCache = null;
 
   function invalidate(){ cache = null; }
   function reset(){
-    state.texto = ''; state.campos = {}; state.situacao = 'todas'; state.etapas = []; state.aging = [];
+    state.texto = ''; state.campos = {}; state.dims = {}; state.situacao = 'todas'; state.etapas = []; state.aging = [];
     state.dataDe = ''; state.dataAte = ''; state.produto = ''; state.semMovDias = null;
     state.comRetorno = false; state.statusRapido = null;
     invalidate();
@@ -3086,6 +3244,12 @@ const Filters = (() => {
   function ativos(){
     const out = [];
     if(state.texto) out.push({tipo:'texto', label:'Texto: "'+state.texto+'"'});
+    for(const id in state.dims){
+      const v = state.dims[id];
+      if(!v || !v.length) continue;
+      const d = Dim.get(id);
+      out.push({tipo:'dim', dim:id, label:((d && d.rot) || id)+': '+(v.length > 3 ? v.length+' selecionados' : v.join(', '))});
+    }
     for(const c in state.campos){
       const v = state.campos[c];
       if(v && v.length) out.push({tipo:'campo', campo:c, label:c+': '+(v.length > 2 ? v.length+' selecionados' : v.join(', '))});
@@ -3101,7 +3265,8 @@ const Filters = (() => {
     return out;
   }
   function limparUm(f){
-    if(f.tipo === 'campo') delete state.campos[f.campo];
+    if(f.tipo === 'dim') delete state.dims[f.dim];
+    else if(f.tipo === 'campo') delete state.campos[f.campo];
     else if(f.tipo === 'texto') state.texto = '';
     else if(f.tipo === 'situacao') state.situacao = 'todas';
     else if(f.tipo === 'etapas') state.etapas = [];
@@ -3117,7 +3282,11 @@ const Filters = (() => {
   function facets(){
     if(facetsCache) return facetsCache;
     const list = DB.listaNcrs();
-    const cols = DB.campos();
+    /* colunas promovidas a dimensao saem da lista generica: a mesma coluna
+       em duas caixas de filtro daria dois resultados diferentes (a faceta
+       casa a celula inteira, a dimensao casa cada valor) */
+    const usadas = new Set(Dim.colunasUsadas());
+    const cols = DB.campos().filter(c => !usadas.has(c));
     const out = [];
     const prior = ['status','disciplina','tipo de produto','tipo de anomalia','nivel','critico','sbr',
                    'retrabalho','regressao','autor','especialista 2.1','especialista ta','responsavel 7.2 ta','bigramas'];
@@ -3145,7 +3314,10 @@ const Filters = (() => {
     facetsCache = out;
     return out;
   }
-  function invalidateFacets(){ facetsCache = null; cache = null; }
+  function invalidateFacets(){ facetsCache = null; cache = null; Dim.invalidate(); }
+  /* telas que nao passam pelo recorte: o aviso de filtro precisa dizer isso */
+  const AFETA = {dashboard:true, ncrs:true, produtos:true, aging:true, fluxo:true, fluxos:true, historico:true};
+  const afeta = view => !!AFETA[view];
 
   function textoMatch(n, q){
     if(n.id.toLowerCase().indexOf(q) >= 0) return true;
@@ -3163,6 +3335,13 @@ const Filters = (() => {
     const campos = Object.keys(s.campos).filter(k => s.campos[k] && s.campos[k].length);
     const setMap = {};
     campos.forEach(k => setMap[k] = new Set(s.campos[k]));
+    const dims = [];
+    Object.keys(s.dims).forEach(id => {
+      const v = s.dims[id];
+      if(!v || !v.length) return;
+      const d = Dim.get(id);
+      if(d && d.col) dims.push({d, set:new Set(v)});
+    });
     const agSet = s.aging.length ? new Set(s.aging) : null;
     const etSet = s.etapas.length ? new Set(s.etapas.map(String)) : null;
     const de = s.dataDe ? new Date(s.dataDe+'T00:00:00').getTime() : null;
@@ -3174,6 +3353,8 @@ const Filters = (() => {
       if(s.situacao === 'fechadas' && !n.fechada) return false;
       if(s.statusRapido && Util.strVal(n.status) !== s.statusRapido) return false;
       for(const k of campos){ if(!setMap[k].has(Util.strVal(n.campos[k]) || '(vazio)')) return false; }
+      /* multivalorada: basta um dos valores da celula estar selecionado */
+      for(const x of dims){ if(!Dim.tokensDe(n, x.d).some(t => x.set.has(t))) return false; }
       if(etSet && !etSet.has(String(n.ordem == null ? 'null' : n.ordem))) return false;
       if(agSet){ const m = Metrics.derive(n); if(!agSet.has(m.faixa)) return false; }
       if(de != null || ate != null){
@@ -3194,7 +3375,7 @@ const Filters = (() => {
     cache = list;
     return list;
   }
-  return {state, aplicar, reset, invalidate, invalidateFacets, facets, ativos, limparUm};
+  return {state, aplicar, reset, invalidate, invalidateFacets, facets, ativos, limparUm, afeta};
 })();
 
 /* ============================ UIManager ============================ */
@@ -3209,7 +3390,8 @@ const UI = (() => {
     imp:'<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
     file:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
     cog:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14a1.7 1.7 0 0 0-1.5-1H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 3 7.6a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 3V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 16.4 3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
-    folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+    folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    trilha:'<circle cx="5" cy="7" r="2.4"/><circle cx="12" cy="17" r="2.4"/><circle cx="19" cy="7" r="2.4"/><path d="M7.2 8.4 9.9 15M14.1 15.4 16.9 9"/>'
   };
   const VIEWS = [
     {id:'dashboard', nome:'Dashboard', sub:'Visão geral das não conformidades', icon:ICON.dash, sec:'Análise'},
@@ -3217,6 +3399,7 @@ const UI = (() => {
     {id:'produtos', nome:'Produtos', sub:'Produtos vinculados às NCRs', icon:ICON.box, sec:'Análise'},
     {id:'aging', nome:'Aging', sub:'Tempo em aberto e sem movimentação', icon:ICON.clock, sec:'Análise'},
     {id:'fluxo', nome:'Análise de Fluxo', sub:'Avanços, retornos, gargalos e tempos por etapa', icon:ICON.flow, sec:'Análise'},
+    {id:'fluxos', nome:'Fluxos das NCRs', sub:'Trajetória de cada NCR e reprodução do fluxo no tempo', icon:ICON.trilha, sec:'Análise'},
     {id:'historico', nome:'Histórico', sub:'Linha do tempo de todas as movimentações', icon:ICON.hist, sec:'Análise'},
     {id:'importacoes', nome:'Importações', sub:'Log detalhado de cada atualização do banco', icon:ICON.imp, sec:'Dados'},
     {id:'arquivos', nome:'Arquivos', sub:'Excel processados, hashes e backups', icon:ICON.file, sec:'Dados'},
@@ -3244,6 +3427,8 @@ const UI = (() => {
     const v = VIEWS.find(x => x.id === id) || VIEWS[0];
     $('#viewTitle').textContent = v.nome;
     $('#viewSub').textContent = v.sub;
+    fecharCuePop();
+    atualizarCue();
     render(id);
     $('#viewWrap').scrollTop = 0;
   }
@@ -3256,6 +3441,7 @@ const UI = (() => {
       else if(id === 'produtos') Prod.render(host);
       else if(id === 'aging') Aging.render(host);
       else if(id === 'fluxo') FluxoView.render(host);
+      else if(id === 'fluxos') Trilhas.render(host);
       else if(id === 'historico') Hist.render(host);
       else if(id === 'importacoes') Imp.render(host);
       else if(id === 'arquivos') Arq.render(host);
@@ -3270,6 +3456,53 @@ const UI = (() => {
     Filters.invalidate();
     atualizarBadges();
     render(atual);
+  }
+  /* Aviso de filtro: o recorte vale para o app inteiro, e quem troca de tela
+     nao deveria precisar adivinhar por que os numeros mudaram. Fica no topo,
+     discreto, e diz na hora se a tela aberta e ou nao afetada. */
+  function atualizarCue(){
+    const cue = $('#filterCue');
+    if(!cue) return;
+    const at = Filters.ativos();
+    const total = DB.contagem().ncrs;
+    if(!at.length || !total){ cue.className = 'fcue'; fecharCuePop(); return; }
+    const n = Filters.aplicar().length;
+    const afeta = Filters.afeta(atual);
+    cue.className = 'fcue show' + (afeta ? '' : ' mute');
+    cue.innerHTML = '<i></i>' + at.length + (at.length > 1 ? ' filtros' : ' filtro')
+      + (afeta ? ' · <b style="font-weight:700">' + Util.fNum(n) + '</b>\u00a0de ' + Util.fNum(total) + ' NCRs'
+               : ' · não afeta esta tela');
+    cue.title = afeta
+      ? 'O recorte ativo reduz esta tela a ' + Util.fNum(n) + ' de ' + Util.fNum(total) + ' NCRs. Clique para ver ou limpar.'
+      : 'Há filtros ativos, mas esta tela mostra os dados completos. Clique para ver ou limpar.';
+  }
+  function fecharCuePop(){ const p = $('#fcuePop'); if(p) p.remove(); }
+  function abrirCuePop(){
+    if($('#fcuePop')){ fecharCuePop(); return; }
+    const cue = $('#filterCue');
+    const at = Filters.ativos();
+    if(!at.length) return;
+    const afeta = Filters.afeta(atual);
+    const pop = document.createElement('div');
+    pop.className = 'fcue-pop show';
+    pop.id = 'fcuePop';
+    pop.innerHTML = '<h4>Filtros aplicados</h4>'
+      + '<div class="lst">' + at.map((f,i) => '<div class="it"><span title="'+esc(f.label)+'">'+esc(f.label)+'</span><b data-i="'+i+'" title="Remover este filtro">&times;</b></div>').join('') + '</div>'
+      + '<div class="small muted" style="margin-bottom:10px">' + (afeta
+          ? 'Vale para Dashboard, NCRs, Produtos, Aging, Análise de Fluxo, Fluxos e Histórico — <b>'
+            + Util.fNum(Filters.aplicar().length) + '</b> de ' + Util.fNum(DB.contagem().ncrs) + ' NCRs.'
+          : 'Esta tela (' + esc((VIEWS.find(v => v.id === atual)||{}).nome || atual) + ') não usa o recorte: ela mostra os dados completos. '
+            + 'As telas de análise continuam filtradas.') + '</div>'
+      + '<button class="btn sm" data-act="limpar" style="width:100%">Limpar todos os filtros</button>';
+    document.body.appendChild(pop);
+    const r = cue.getBoundingClientRect();
+    pop.style.top = (r.bottom + 8) + 'px';
+    pop.style.left = Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12)) + 'px';
+    $$('.lst b', pop).forEach(b => b.onclick = () => { Filters.limparUm(at[+b.dataset.i]); fecharCuePop(); refresh(); });
+    $('[data-act=limpar]', pop).onclick = () => {
+      Filters.reset(); const gs = $('#globalSearch'); if(gs) gs.value = '';
+      fecharCuePop(); refresh();
+    };
   }
   function atualizarBadges(){
     const c = DB.contagem();
@@ -3289,6 +3522,7 @@ const UI = (() => {
     const meta = DB.all().meta;
     $('#lblDb').textContent = meta && meta.atualizadoEm ? 'Atualizado ' + Util.fDateTime(meta.atualizadoEm) : 'Sem banco';
     $('#dotDb').className = 'dot ' + (meta && meta.atualizadoEm ? 'ok' : '');
+    atualizarCue();
   }
 
   /* ---------- tema ---------- */
@@ -3530,7 +3764,7 @@ const UI = (() => {
         <button type="button" class="ms-btn"><span class="txt">${sel.size?sel.size+' selecionado(s)':'Todos'}</span>${sel.size?'<span class="cnt">'+sel.size+'</span>':''}<span style="opacity:.5">▾</span></button>
         <div class="ms-pop">
           ${o.valores.length > 8 ? '<div class="ms-search"><input type="text" placeholder="Filtrar..."></div>' : ''}
-          <div class="ms-list">${o.valores.map(x => `<label class="ms-opt"><input type="checkbox" value="${esc(x.v)}" ${sel.has(x.v)?'checked':''}><span>${esc(x.v)}</span><span class="n">${Util.fNum(x.n)}</span></label>`).join('')}</div>
+          <div class="ms-list">${o.valores.map(x => `<label class="ms-opt"${x.n?'':' style="opacity:.5" title="nenhuma NCR com este valor nos arquivos já importados"'}><input type="checkbox" value="${esc(x.v)}" ${sel.has(x.v)?'checked':''}><span>${esc(x.lbl==null?x.v:x.lbl)}</span><span class="n">${Util.fNum(x.n)}</span></label>`).join('')}</div>
           <div class="ms-acts"><button class="btn sm ghost" data-act="all">Todos</button><button class="btn sm ghost" data-act="none">Nenhum</button></div>
         </div></div>`;
     const root = $('#'+id, host);
@@ -3579,6 +3813,18 @@ const UI = (() => {
       selecionados: st.etapas, onChange: v => { st.etapas = v; aplicar(); }});
     $$('.ms-opt span', fEt).forEach(sp => { if(sp.className !== 'n'){ const t = sp.textContent; sp.textContent = t === 'null' ? 'Fora do fluxo' : Flow.etapa(+t); } });
     cont.appendChild(fEt);
+    /* dimensoes (SBR, SBY, sistemas): recorte mais amplo, vem antes */
+    Dim.disponiveis().forEach(d => {
+      const box = document.createElement('div');
+      box.className = 'f';
+      multiselect(box, {label: d.rot + (d.multi ? ' (multivalorada)' : ''),
+        valores: d.valores.map(x => ({v:x.v, n:x.n})),
+        selecionados: st.dims[d.id] || [],
+        onChange: v => { if(v.length) st.dims[d.id] = v; else delete st.dims[d.id]; aplicar(); }});
+      const b = $('.ms-btn', box);
+      if(b) b.title = d.rot + ' — coluna "' + d.col + '"' + (d.multi ? ' · uma NCR pode entrar em vários valores' : '');
+      cont.appendChild(box);
+    });
     /* facetas principais */
     const maxF = opts.maxFacetas || 5;
     facets.slice(0, maxF).forEach(f => {
@@ -3634,7 +3880,7 @@ const UI = (() => {
     }
     function aplicar(){ Filters.invalidate(); refresh(); }
   }
-  return {VIEWS, ICON, svgIcon, montarNav, ir, render, refresh, atualizarBadges, tema, toggleTema,
+  return {VIEWS, ICON, svgIcon, montarNav, ir, render, refresh, atualizarBadges, atualizarCue, abrirCuePop, fecharCuePop, tema, toggleTema,
           modal, fecharModal, confirmar, busy, telaInicial, recarregar, atualizarBanco, importarManual,
           multiselect, barraFiltros, tile, get atual(){ return atual; }};
 })();
@@ -3692,6 +3938,7 @@ const Dash = (() => {
         ${card(dimNome(0),'top 10','<div class="chart-host" id="chDim0"></div>')}
         ${card(dimNome(1),'top 10','<div class="chart-host" id="chDim1"></div>')}
       </div>
+      ${cardsRecorte()}
       <div class="grid g2" style="margin-bottom:14px">
         ${card('Responsáveis com mais NCRs abertas','top 12','<div class="chart-host" id="chResp"></div>')}
         ${card('Produtos com mais NCRs','top 12','<div class="chart-host" id="chProd"></div>')}
@@ -3738,6 +3985,20 @@ const Dash = (() => {
       if(!campo || !el) return;
       Charts.hbar(el, {data: Metrics.contar(list, n => n.campos[campo], 10), limit:10, mono:true,
         onClick: k => { Filters.state.campos[campo] = [k]; Filters.invalidate(); UI.ir('ncrs'); }});
+    });
+    /* recortes: um grafico por dimensao reconhecida. Bigramas e multivalorado,
+       entao a soma das barras passa do total de NCRs — a dica no cabecalho diz
+       isso, para ninguem somar e achar que o numero esta errado. */
+    Dim.disponiveis().forEach(d => {
+      const el = $('#chDim_' + d.id);
+      if(!el) return;
+      const cont = new Map();
+      list.forEach(n => Dim.tokensDe(n, d).forEach(t => cont.set(t, (cont.get(t)||0) + 1)));
+      (d.fixos || []).forEach(f => { if(!cont.has(f)) cont.set(f, 0); });
+      const dados = Array.from(cont.entries()).map(([label,value]) => ({label, value, key:label}))
+        .sort((a,b) => b.value - a.value || Util.cmp(a.label, b.label)).slice(0,14);
+      Charts.hbar(el, {data:dados, limit:14, mono:true, emptyMsg:'Sem valores nesta coluna',
+        onClick: k => { Filters.state.dims[d.id] = [k]; Filters.invalidate(); UI.ir('ncrs'); }});
     });
     const respCampo = campoResponsavel();
     Charts.hbar($('#chResp'), {
@@ -3788,6 +4049,15 @@ const Dash = (() => {
       else if(k === 'retorno'){ Filters.state.comRetorno = true; }
       Filters.invalidate(); UI.ir('ncrs');
     });
+  }
+  /* uma linha de cards, so com as dimensoes que existem no export lido */
+  function cardsRecorte(){
+    const ds = Dim.disponiveis();
+    if(!ds.length) return '';
+    return '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start;margin-bottom:14px">'
+      + ds.map(d => card(d.rot, d.multi ? 'uma NCR pode contar em vários' : 'coluna "' + d.col + '"',
+          '<div class="chart-host" id="chDim_' + esc(d.id) + '"></div>')).join('')
+      + '</div>';
   }
   function dimCampo(i){
     const prefer = [['tipo de produto','disciplina','categoria'],['tipo de anomalia','motivo da anomalia','nivel']];
@@ -4263,7 +4533,7 @@ const Detalhe = (() => {
         + '<td>'+(p.ativo === false ? '<span class="badge crit">removido '+Util.fDate(p.removidoEm)+'</span>' : '<span class="badge new">ativo</span>')+'</td></tr>').join('')
       + '</tbody></table></div>';
   }
-  return {abrir, flowSVG, timeline, sequencia};
+  return {abrir, flowSVG, timeline, sequencia, legendaFluxo};
 })();
 
 /* ============================ Produtos ============================ */
@@ -4544,6 +4814,342 @@ const FluxoView = (() => {
     ligarLinks(box);
   }
   return {render};
+})();
+
+/* ============================ Fluxos das NCRs ============================
+   Duas leituras da mesma trajetória: a galeria, para varrer muitas NCRs de
+   relance e achar o padrão estranho, e a reprodução, que roda o relógio e
+   mostra as NCRs andando pelas etapas no tempo real do export.            */
+const Trilhas = (() => {
+  const st = {modo:'galeria', ordem:'mov', grupo:'nenhum', limite:60,
+              t:null, tocando:false, vel:30, raf:null};
+  /* um desenho por NCR custa DOM: o teto e explicito na tela em vez de um
+     "todas" que trava o navegador num banco de 20 mil NCRs */
+  const TETO_REPRO = 800;
+
+  /* ---------- modelo de colunas (uma por etapa do fluxo) ---------- */
+  function modelo(){
+    const byOrd = Flow.statusPorOrdem();
+    const ordens = Array.from(byOrd.keys()).sort((a,b) => a-b);
+    const cols = ordens.map(o => ({ordem:o, titulo:Flow.etapa(o)}));
+    cols.push({ordem:null, titulo:'Fora do fluxo'});
+    const idx = new Map();
+    cols.forEach((c,i) => { if(c.ordem != null) idx.set(c.ordem, i); });
+    return {cols, idx, fora: cols.length - 1};
+  }
+  function colDe(status, m){
+    const o = Flow.ordemInferida(status);
+    return (o != null && m.idx.has(o)) ? m.idx.get(o) : m.fora;
+  }
+  /* pontos da trajetoria, em ordem de tempo */
+  function pontos(rec, m){
+    const pts = [];
+    Detalhe.sequencia(rec).forEach(e => {
+      if(!e.data || !e.status) return;
+      const t = new Date(e.data).getTime();
+      if(isNaN(t)) return;
+      pts.push({t, data:e.data, st:e.status, cls:e.cls || 'INDEFINIDA', c:colDe(e.status, m), estimado:!!e.estimado});
+    });
+    pts.sort((a,b) => a.t - b.t);
+    return pts;
+  }
+  function montar(list, m){
+    return list.map(rec => ({rec, pts: pontos(rec, m), i:0}))
+               .filter(x => x.pts.length);
+  }
+  const CORES = {AVANCO:'var(--good)', RETORNO:'var(--critical)', LATERAL:'var(--warning)',
+                 FECHAMENTO:'var(--s7)', REABERTURA:'var(--serious)', INDEFINIDA:'var(--muted)',
+                 INICIAL:'var(--s1)', PERMANENCIA:'var(--muted)'};
+
+  /* ---------- galeria: uma trajetoria por cartao ---------- */
+  /* nos cartoes so vai o numero da etapa: o nome inteiro, repetido em dezenas
+     de miniaturas, vira ruido — a legenda acima da grade diz o que e cada linha */
+  const marcaEtapa = c => c.ordem == null ? '—' : String(c.ordem);
+  function legendaEtapas(m){
+    return '<div class="trk-legend"><span>Linhas, de cima para baixo:</span>'
+      + m.cols.map(c => '<span><b>' + esc(marcaEtapa(c)) + '</b> '
+          + esc(String(c.titulo).replace(/^\s*\d+\s*·\s*/, '')) + '</span>').join('')
+      + '<span style="margin-left:auto">eixo horizontal: passos da trajetória, na ordem</span></div>';
+  }
+  function miniSVG(t, m){
+    const rows = m.cols.length;
+    const PADL = 24, PADR = 12, TOP = 10, RH = 15;
+    const W = 400, H = TOP + rows*RH + 8;
+    let g = '';
+    m.cols.forEach((c,i) => {
+      const y = TOP + i*RH + RH/2;
+      g += `<text x="${PADL-8}" y="${y+3.5}" text-anchor="end" style="fill:var(--muted);font-size:9px">${esc(marcaEtapa(c))}`
+         + `<title>${esc(c.titulo)}</title></text>`;
+      g += `<path d="M${PADL},${y} H${W-PADR}" style="stroke:var(--grid)" stroke-width="1" stroke-dasharray="2 4"/>`;
+    });
+    const n = t.pts.length;
+    const span = W - PADR - PADL;
+    const xs = i => n === 1 ? PADL + span/2 : PADL + (span * i) / (n - 1);
+    const ys = c => TOP + c*RH + RH/2;
+    for(let i = 1; i < n; i++){
+      const a = t.pts[i-1], b = t.pts[i];
+      const cor = CORES[b.cls] || 'var(--muted)';
+      const x1 = xs(i-1), y1 = ys(a.c), x2 = xs(i), y2 = ys(b.c);
+      const mx = (x1 + x2) / 2;
+      g += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none"`
+         + ` style="stroke:${cor};opacity:.9" stroke-width="1.8"${b.estimado ? ' stroke-dasharray="4 3"' : ''}/>`;
+    }
+    t.pts.forEach((pt,i) => {
+      const x = xs(i), y = ys(pt.c), ult = i === n-1;
+      const cor = CORES[pt.cls] || 'var(--muted)';
+      g += `<circle cx="${x}" cy="${y}" r="${ult ? 4.6 : 3.1}" style="fill:${ult ? cor : 'var(--surface)'};stroke:${cor}" stroke-width="1.8">`
+         + `<title>${i+1}. ${Util.fDate(pt.data)} — ${esc(pt.st)} (${esc(Flow.LABEL[pt.cls] || pt.cls)})`
+         + `${pt.estimado ? '\n data estimada: o export registra apenas a saída desta etapa' : ''}</title></circle>`;
+    });
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet"
+      style="max-width:${W}px;height:auto;display:block">${g}</svg>`;
+  }
+  function chaves(rec, grupo){
+    if(grupo === 'nenhum') return [''];
+    if(grupo === 'etapa') return [Flow.etapa(rec.ordem)];
+    if(grupo === 'status') return [Util.strVal(rec.status) || '(vazio)'];
+    const d = Dim.get(grupo);
+    if(!d) return [''];
+    const ts = Dim.tokensDe(rec, d);
+    return ts.length ? ts : ['(sem ' + d.rot + ')'];
+  }
+  const ORDENS = {
+    mov:     {lbl:'Mais movimentadas',   fn:(a,b) => b.pts.length - a.pts.length || Util.cmp(a.rec.id, b.rec.id)},
+    ret:     {lbl:'Mais retornos',       fn:(a,b) => ((b.rec.mov&&b.rec.mov.retornos)||0) - ((a.rec.mov&&a.rec.mov.retornos)||0) || b.pts.length - a.pts.length},
+    recente: {lbl:'Movimentação mais recente', fn:(a,b) => Util.cmp(b.rec.ultimaAlteracao, a.rec.ultimaAlteracao)},
+    antiga:  {lbl:'Abertas há mais tempo',     fn:(a,b) => Util.cmp(a.rec.criadoEm, b.rec.criadoEm)},
+    id:      {lbl:'Número da NCR',       fn:(a,b) => Util.cmp(a.rec.id, b.rec.id)}
+  };
+  function galeria(host, trilhas, m){
+    const ord = ORDENS[st.ordem] || ORDENS.mov;
+    const ordenadas = trilhas.slice().sort(ord.fn);
+    const mostrar = ordenadas.slice(0, st.limite || 60);
+    /* agrupa so o que vai a tela, mas conta o grupo inteiro: senao o
+       cabecalho mentiria sobre o tamanho do grupo */
+    const totalPorChave = new Map();
+    ordenadas.forEach(t => chaves(t.rec, st.grupo).forEach(k => totalPorChave.set(k, (totalPorChave.get(k)||0) + 1)));
+    const grupos = new Map();
+    mostrar.forEach(t => chaves(t.rec, st.grupo).forEach(k => {
+      if(!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k).push(t);
+    }));
+    const ks = Array.from(grupos.keys()).sort((a,b) => (totalPorChave.get(b)||0) - (totalPorChave.get(a)||0) || Util.cmp(a,b));
+    let html = legendaEtapas(m);
+    ks.forEach(k => {
+      if(st.grupo !== 'nenhum'){
+        const tot = totalPorChave.get(k) || 0, vis = grupos.get(k).length;
+        html += `<div class="trk-grp"><b>${esc(k)}</b><span class="badge ord">${Util.fNum(tot)} NCR${tot===1?'':'s'}</span>`
+              + (vis < tot ? `<span class="muted small">mostrando ${Util.fNum(vis)}</span>` : '') + '</div>';
+      }
+      html += '<div class="trk-grid">' + grupos.get(k).map(t => {
+        const r = t.rec, ret = (r.mov && r.mov.retornos) || 0;
+        const etapas = new Set(t.pts.map(x => Util.strVal(x.st))).size;
+        return `<div class="trk">
+          <div class="trk-h">${ncrLink(r.id, r.key)}${badgeStatus(r)}</div>
+          <div class="trk-b">${miniSVG(t, m)}</div>
+          <div class="trk-f"><span>${t.pts.length} passo${t.pts.length===1?'':'s'}</span><span>${etapas} etapa${etapas===1?'':'s'}</span>
+            ${ret ? '<span class="mv mv-RETORNO">↩ '+ret+'</span>' : ''}
+            ${r.reconstruida ? '<span class="badge new" title="trajetória lida das colunas datadas do export">'+r.reconstruida+' marcos</span>' : ''}
+            <span class="right muted">${Util.fDate(t.pts[0].data)} → ${Util.fDate(t.pts[t.pts.length-1].data)}</span></div>
+        </div>`;
+      }).join('') + '</div>';
+    });
+    if(!ks.length) html = semDados('Nenhuma NCR com trajetória registrada no recorte atual');
+    else if(mostrar.length < ordenadas.length)
+      html += '<div class="note small" style="margin-top:12px">Mostrando ' + Util.fNum(mostrar.length) + ' de '
+            + Util.fNum(ordenadas.length) + ' NCRs, por ' + esc(ord.lbl.toLowerCase())
+            + '. Use <b>Mostrar</b> para ampliar ou aperte o filtro.</div>';
+    const box = document.createElement('div');
+    box.innerHTML = html;
+    host.appendChild(box);
+    ligarLinks(box);
+  }
+
+  /* ---------- reproducao: o relogio corre e as NCRs andam ---------- */
+  function reproducao(host, todas, m){
+    const excedente = Math.max(0, todas.length - TETO_REPRO);
+    const ord = ORDENS[st.ordem] || ORDENS.mov;
+    const trilhas = excedente ? todas.slice().sort(ord.fn).slice(0, TETO_REPRO) : todas;
+    const t0 = Math.min.apply(null, trilhas.map(t => t.pts[0].t));
+    const t1 = Math.max.apply(null, trilhas.map(t => t.pts[t.pts.length-1].t));
+    if(st.t == null || st.t < t0 || st.t > t1) st.t = t0;
+    const N = trilhas.length;
+    const COLW = 138, GAP = 10, PADT = 50, PADX = 8;
+    const R = N > 400 ? 2.6 : N > 150 ? 3.4 : 4.4;
+    const DX = R*2 + 3, DY = R*2 + 3;
+    const perRow = Math.max(1, Math.floor((COLW - 16) / DX));
+    /* o quadro nao pode mudar de tamanho enquanto a animacao corre, entao a
+       altura sai da maior lotacao que alguma etapa chega a ter no periodo —
+       varrendo os eventos uma vez, em vez de reservar espaco para o caso
+       improvavel de todas as NCRs caberem numa etapa so */
+    const maxRows = (() => {
+      const evs = [];
+      trilhas.forEach(t => t.pts.forEach((pt,i) => evs.push({t:pt.t, entra:pt.c, sai: i ? t.pts[i-1].c : -1})));
+      evs.sort((a,b) => a.t - b.t);
+      const cur = new Array(m.cols.length).fill(0);
+      let max = 1;
+      evs.forEach(e => {
+        if(e.sai >= 0) cur[e.sai]--;
+        cur[e.entra]++;
+        if(cur[e.entra] > max) max = cur[e.entra];
+      });
+      return Math.ceil(max / perRow);
+    })();
+    const W = PADX*2 + m.cols.length*COLW + (m.cols.length-1)*GAP;
+    const H = PADT + Math.max(4, maxRows)*DY + 12;
+
+    const box = document.createElement('div');
+    box.innerHTML = `
+      <div class="rep-ctl">
+        <button class="btn sm primary" id="repPlay">${st.tocando ? '❚❚ Pausar' : '▶ Reproduzir'}</button>
+        <button class="btn sm" id="repBack" title="Voltar ao início">⏮</button>
+        <input type="range" id="repSlider" min="0" max="1000" value="0" style="flex:1;min-width:180px">
+        <select id="repVel" class="sm">
+          ${[[7,'7 dias/s'],[30,'30 dias/s'],[90,'90 dias/s'],[365,'1 ano/s']].map(([v,l]) =>
+            `<option value="${v}"${st.vel===v?' selected':''}>${l}</option>`).join('')}
+        </select>
+        <b id="repData" class="mono"></b>
+      </div>
+      <div class="rep-wrap"><svg id="repSvg" viewBox="0 0 ${W} ${H}" width="100%"
+        preserveAspectRatio="xMinYMin meet" style="max-width:${W}px;height:auto;display:block"></svg></div>
+      ${excedente ? '<div class="note warn small" style="margin-top:10px">Reproduzindo ' + Util.fNum(TETO_REPRO)
+        + ' de ' + Util.fNum(todas.length) + ' NCRs do recorte, escolhidas por <b>' + esc(ord.lbl.toLowerCase())
+        + '</b>. Aperte o filtro para ver o conjunto inteiro.</div>' : ''}
+      ${Detalhe.legendaFluxo()}
+      <div class="small muted" style="margin-top:10px">Cada ponto é uma NCR, na etapa em que ela estava naquela data.
+        A cor é a do movimento que a trouxe até ali.
+        O anel destaca quem se mexeu nos 15 dias anteriores. NCRs ainda não abertas não aparecem.
+        Trajetórias reconstruídas das colunas datadas do export entram aqui como qualquer outra.</div>`;
+    host.appendChild(box);
+
+    const svg = $('#repSvg', box);
+    const ns = 'http://www.w3.org/2000/svg';
+    const mk = (tag, attrs) => { const e = document.createElementNS(ns, tag); for(const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+    /* colunas */
+    m.cols.forEach((c,i) => {
+      const x = PADX + i*(COLW+GAP);
+      svg.appendChild(mk('rect', {x, y:14, width:COLW, height:24, rx:6, style:'fill:var(--surface-3)'}));
+      const t = c.titulo.length > 16 ? c.titulo.slice(0,15)+'…' : c.titulo;
+      const tx = mk('text', {x:x+10, y:29, style:'fill:var(--text-2);font-size:10px;font-weight:600'});
+      tx.textContent = t;
+      svg.appendChild(tx);
+      /* a contagem fica no cabecalho, encostada nos pontos que ela conta */
+      const cnt = mk('text', {x:x+COLW-10, y:29, 'text-anchor':'end', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i});
+      cnt.textContent = '0';
+      svg.appendChild(cnt);
+      svg.appendChild(mk('path', {d:`M${x},${PADT-8} H${x+COLW}`, style:'stroke:var(--grid)', 'stroke-width':1}));
+    });
+    /* um circulo por NCR, reaproveitado a cada quadro */
+    const nodes = trilhas.map(t => {
+      const c = mk('circle', {r:R, cx:-50, cy:-50, style:'fill:var(--muted)', opacity:0});
+      const ti = mk('title', {});
+      c.appendChild(ti);
+      svg.appendChild(c);
+      return {c, ti, t, lastTip:''};
+    });
+    const contadores = m.cols.map((c,i) => $('#repC'+i, box));
+    const lblData = $('#repData', box);
+    const slider = $('#repSlider', box);
+
+    const DESTAQUE = 15*Util.DAY;
+    function quadro(){
+      const T = st.t;
+      const ocup = new Array(m.cols.length).fill(0);
+      for(let k = 0; k < nodes.length; k++){
+        const nd = nodes[k], pts = nd.t.pts;
+        if(T < pts[0].t){ nd.c.setAttribute('opacity', 0); nd.t.i = 0; continue; }
+        let i = nd.t.i;
+        if(pts[i].t > T) i = 0;
+        while(i + 1 < pts.length && pts[i+1].t <= T) i++;
+        nd.t.i = i;
+        const pt = pts[i];
+        const col = pt.c;
+        const pos = ocup[col]++;
+        const x = PADX + col*(COLW+GAP) + 8 + (pos % perRow)*DX + R;
+        const y = PADT + Math.floor(pos / perRow)*DY + R;
+        nd.c.setAttribute('cx', x);
+        nd.c.setAttribute('cy', y);
+        nd.c.setAttribute('opacity', 1);
+        const novo = (T - pt.t) < DESTAQUE && i > 0;
+        nd.c.setAttribute('style', 'fill:' + (CORES[pt.cls] || 'var(--muted)')
+          + (novo ? ';stroke:var(--text);stroke-width:1.6' : ';stroke:none'));
+        nd.c.setAttribute('r', novo ? R + 1.4 : R);
+        const tip = nd.t.rec.id + ' — ' + pt.st;
+        if(tip !== nd.lastTip){ nd.ti.textContent = tip + ' (desde ' + Util.fDate(pt.data) + ')'; nd.lastTip = tip; }
+      }
+      for(let i = 0; i < contadores.length; i++) contadores[i].textContent = ocup[i] || '';
+      lblData.textContent = Util.fDate(new Date(T).toISOString());
+      slider.value = Math.round((T - t0) / Math.max(1, t1 - t0) * 1000);
+    }
+    let ultimo = 0;
+    function loop(ts){
+      if(UI.atual !== 'fluxos' || st.modo !== 'reproducao' || !st.tocando){ st.raf = null; return; }
+      if(!svg.isConnected){ st.raf = null; return; }
+      const dt = ultimo ? Math.min(100, ts - ultimo) : 16;
+      ultimo = ts;
+      st.t += (dt/1000) * st.vel * Util.DAY;
+      if(st.t >= t1){ st.t = t1; st.tocando = false; $('#repPlay', box).textContent = '▶ Reproduzir'; }
+      quadro();
+      st.raf = st.tocando ? requestAnimationFrame(loop) : null;
+    }
+    function tocar(v){
+      st.tocando = v;
+      $('#repPlay', box).textContent = v ? '❚❚ Pausar' : '▶ Reproduzir';
+      ultimo = 0;
+      if(v && !st.raf) st.raf = requestAnimationFrame(loop);
+    }
+    $('#repPlay', box).onclick = () => { if(!st.tocando && st.t >= t1) st.t = t0; tocar(!st.tocando); };
+    $('#repBack', box).onclick = () => { st.t = t0; quadro(); };
+    slider.oninput = e => { tocar(false); st.t = t0 + (t1-t0) * (+e.target.value/1000); quadro(); };
+    $('#repVel', box).onchange = e => { st.vel = +e.target.value; };
+    quadro();
+    if(st.tocando){ st.tocando = false; tocar(true); }
+  }
+
+  /* ---------- tela ---------- */
+  function render(host){
+    if(st.raf){ cancelAnimationFrame(st.raf); st.raf = null; }
+    host.innerHTML = '';
+    if(!DB.contagem().ncrs){ host.innerHTML = semDados('Importe um Excel para ver as trajetórias'); return; }
+    UI.barraFiltros(host, {maxFacetas:3});
+    const list = Filters.aplicar();
+    const m = modelo();
+    const trilhas = montar(list, m);
+    const grupos = [['nenhum','Sem agrupamento']]
+      .concat(Dim.disponiveis().map(d => [d.id, d.rot]))
+      .concat([['etapa','Etapa do fluxo'],['status','Status atual']]);
+    const galeriaAtiva = st.modo === 'galeria';
+    const bar = document.createElement('div');
+    bar.className = 'hstack wrap';
+    bar.style.cssText = 'margin-bottom:12px;gap:10px;align-items:flex-end';
+    bar.innerHTML = `
+      <div class="f"><label class="fld">Visão</label>
+        <div class="hstack" style="gap:6px">
+          <button class="btn sm${st.modo==='galeria'?' primary':''}" data-modo="galeria">Galeria</button>
+          <button class="btn sm${st.modo==='reproducao'?' primary':''}" data-modo="reproducao">Reprodução</button>
+        </div></div>
+      ${galeriaAtiva ? `<div class="f"><label class="fld">Agrupar por</label><select id="trGrupo">
+        ${grupos.map(([v,l]) => `<option value="${esc(v)}"${st.grupo===v?' selected':''}>${esc(l)}</option>`).join('')}
+      </select></div>` : ''}
+      <div class="f"><label class="fld">${galeriaAtiva ? 'Ordenar por' : 'Prioridade na seleção'}</label><select id="trOrd">
+        ${Object.keys(ORDENS).map(k => `<option value="${k}"${st.ordem===k?' selected':''}>${esc(ORDENS[k].lbl)}</option>`).join('')}
+      </select></div>
+      ${galeriaAtiva ? `<div class="f"><label class="fld">Mostrar</label><select id="trLim">
+        ${[[24,'24 NCRs'],[60,'60 NCRs'],[150,'150 NCRs'],[400,'400 NCRs'],[1000,'1000 NCRs']].map(([v,l]) =>
+          `<option value="${v}"${st.limite===v?' selected':''}>${l}</option>`).join('')}
+      </select></div>` : ''}
+      <span class="muted small right">${Util.fNum(trilhas.length)} NCR(s) com trajetória de ${Util.fNum(list.length)} no recorte</span>`;
+    host.appendChild(bar);
+    $$('[data-modo]', bar).forEach(b => b.onclick = () => { st.modo = b.dataset.modo; st.tocando = false; UI.render('fluxos'); });
+    if($('#trGrupo', bar)) $('#trGrupo', bar).onchange = e => { st.grupo = e.target.value; UI.render('fluxos'); };
+    if($('#trLim', bar))   $('#trLim', bar).onchange   = e => { st.limite = +e.target.value; UI.render('fluxos'); };
+    $('#trOrd', bar).onchange = e => { st.ordem = e.target.value; UI.render('fluxos'); };
+
+    if(!trilhas.length){ host.appendChild(Object.assign(document.createElement('div'), {innerHTML: semDados('Nenhuma NCR com trajetória registrada no recorte atual')})); return; }
+    if(st.modo === 'galeria') galeria(host, trilhas, m);
+    else reproducao(host, trilhas, m);
+  }
+  return {render, state:st};
 })();
 
 /* ============================ Histórico geral ============================ */
@@ -4847,7 +5453,7 @@ const Conf = (() => {
     const c = DB.contagem();
     host.innerHTML = `
       <div class="tabs">
-        ${[['geral','Geral'],['fluxo','Fluxo e status'],['aging','Aging'],['campos','Campos monitorados'],['manut','Manutenção']]
+        ${[['geral','Geral'],['fluxo','Fluxo e status'],['dim','Dimensões'],['aging','Aging'],['campos','Campos monitorados'],['manut','Manutenção']]
           .map((t,i) => '<button class="tab'+(i===0?' active':'')+'" data-tab="'+t[0]+'">'+t[1]+'</button>').join('')}
       </div>
       <div class="tabpane active" id="cp-geral">
@@ -4926,6 +5532,39 @@ const Conf = (() => {
             <td><input type="number" value="${f.max==null?'':f.max}" placeholder="sem limite" data-a="max" data-i="${i}"></td>
             <td><button class="btn sm ghost" data-adel="${i}">✕</button></td></tr>`).join('')}</tbody></table></div>
           <div class="hstack" style="margin-top:12px"><button class="btn" id="agAdd">+ Faixa</button><button class="btn primary" id="agSalvar">Salvar faixas</button></div>`)}
+      </div>
+
+      <div class="tabpane" id="cp-dim">
+        ${card('Recortes do parque de NCRs','cada um lê uma coluna do Excel', `
+          <div class="note small" style="margin-bottom:12px">Estes filtros aparecem em todas as telas de análise e no agrupamento da tela
+            <b>Fluxos das NCRs</b>. A coluna de cada recorte é reconhecida pelo cabeçalho; quando o seu export usa outro nome,
+            aponte a coluna certa aqui — nada é deduzido do nome do arquivo.</div>
+          ${Dim.lista().map(d => {
+            const opts = ['<option value="">(procurar pelo cabeçalho: ' + esc((d.alias||[]).join(', ')) + ')</option>']
+              .concat(DB.campos().sort(Util.cmp).map(c =>
+                '<option value="' + esc(c) + '"' + ((DB.cfg().dimensoesCol||{})[d.id] === c ? ' selected' : '') + '>' + esc(c) + '</option>'));
+            return `<div class="kv" style="align-items:flex-start;gap:14px;flex-wrap:wrap">
+              <div style="min-width:220px;flex:1">
+                <b>${esc(d.rot)}</b>
+                ${d.col ? '<span class="badge new" style="margin-left:6px">coluna “' + esc(d.col) + '”</span>'
+                        : '<span class="badge warn" style="margin-left:6px">coluna não encontrada</span>'}
+                <div class="small muted" style="white-space:normal;margin-top:3px">${esc(d.ajuda||'')}</div>
+                ${d.col ? '<div class="small muted" style="margin-top:4px">' + Util.fNum(d.preenchidas) + ' NCR(s) preenchidas · '
+                          + Util.fNum(d.distintos) + ' valor(es) distinto(s)'
+                          + (d.multi ? ' depois de separar as células com vírgula' : '') + '.</div>' : ''}
+                ${d.col && d.brutos.length && d.normalizar ? '<div class="small muted" style="margin-top:4px;white-space:normal">Valores como estão no Excel: '
+                          + d.brutos.slice(0,8).map(b => '<b>' + esc(b.v) + '</b> (' + b.n + ')').join(', ')
+                          + (d.brutos.length > 8 ? ' e mais ' + (d.brutos.length-8) : '') + '.</div>' : ''}
+                ${d.col && d.valores.length ? '<div class="small muted" style="margin-top:4px;white-space:normal">No filtro: '
+                          + d.valores.slice(0,12).map(v => (v.n ? '' : '<span style="opacity:.55">')
+                              + esc(v.v) + ' (' + v.n + ')' + (v.n ? '' : '</span>')).join(', ')
+                          + (d.valores.length > 12 ? ' e mais ' + (d.valores.length-12) : '') + '.</div>' : ''}
+              </div>
+              <select data-dimcol="${esc(d.id)}" style="min-width:260px">${opts.join('')}</select>
+            </div>`;
+          }).join('')}
+          <div class="small muted" style="margin-top:10px">Um recorte sem coluna correspondente simplesmente não aparece nos filtros —
+            ele volta sozinho assim que um Excel com essa coluna for importado.</div>`)}
       </div>
 
       <div class="tabpane" id="cp-campos">
@@ -5068,6 +5707,16 @@ const Conf = (() => {
       };
     }
     /* campos */
+    $$('[data-dimcol]', host).forEach(sel => sel.onchange = () => {
+      cfg.dimensoesCol = cfg.dimensoesCol || {};
+      if(sel.value) cfg.dimensoesCol[sel.dataset.dimcol] = sel.value;
+      else delete cfg.dimensoesCol[sel.dataset.dimcol];
+      /* o recorte mudou de coluna: a selecao antiga nao vale mais */
+      delete Filters.state.dims[sel.dataset.dimcol];
+      Dim.invalidate();
+      Filters.invalidateFacets();
+      salvarCfg('Coluna do recorte atualizada.');
+    });
     if(g('cmSalvar')){
       g('cmSalvar').onclick = () => {
         const todos = DB.campos();
@@ -5209,6 +5858,11 @@ function ajuda(){
   $('#btnUpdate').onclick = () => UI.atualizarBanco();
   $('#btnTheme').onclick = () => UI.toggleTema();
   $('#btnHelp').onclick = ajuda;
+  $('#filterCue').onclick = e => { e.stopPropagation(); UI.abrirCuePop(); };
+  document.addEventListener('click', e => {
+    const p = $('#fcuePop');
+    if(p && !p.contains(e.target) && e.target.id !== 'filterCue') UI.fecharCuePop();
+  });
   $('#modalClose').onclick = UI.fecharModal;
   $('#modalBg').onclick = e => { if(e.target === $('#modalBg')) UI.fecharModal(); };
   $('#btnCancelImport').onclick = () => { Importer.cancelar(); Util.toast('Cancelamento solicitado — concluindo o arquivo atual...','warn'); };

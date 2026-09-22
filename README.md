@@ -64,8 +64,28 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
   da coluna de *tempo mais recente*, quando existe.
 - **Classificação automática das movimentações**: avanço, retorno, movimentação lateral,
   fechamento, reabertura e permanência (que não gera evento).
-- **Módulos**: Dashboard, NCRs, Produtos, Aging, Análise de Fluxo, Histórico, Importações,
-  Arquivos e Configurações.
+- **Recortes (dimensões) com multisseleção**: colunas como `SBR`, `SBY` e `Bigramas` viram
+  filtros próprios, presentes em todas as telas de análise.
+  - A coluna de cada recorte é achada pelo **cabeçalho**; quando o export usa outro nome, ela é
+    apontada à mão em **Configurações → Dimensões**. Recorte sem coluna correspondente
+    simplesmente não aparece — e volta sozinho quando um Excel com essa coluna for importado.
+  - `SBR` é **normalizado**: `SBR 2`, `sbr-02` e `2` caem no mesmo grupo; `SBR1`–`SBR4` ficam
+    sempre na lista, mesmo zerados, e `SBRall` aparece quando o export marca alguma NCR como
+    comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
+  - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
+    e cada bigrama vira uma opção de filtro e um grupo próprio.
+- **Aviso discreto de filtro**: quando há recorte ativo, o topo mostra quantos filtros estão
+  aplicados e quantas NCRs restam — e, nas telas que não usam o recorte (Importações, Arquivos,
+  Configurações), avisa que elas seguem mostrando os dados completos. Um clique lista e limpa.
+- **Fluxos das NCRs**: tela dedicada às trajetórias, em duas leituras.
+  - **Galeria**: uma miniatura por NCR, com o caminho percorrido no tempo (etapa no eixo
+    vertical, passos no horizontal), colorida por tipo de movimento. Agrupa por sistema, SBR,
+    etapa ou status.
+  - **Reprodução**: o relógio corre sobre as datas reais do export e cada NCR é um ponto que
+    anda entre as etapas, com contagem por etapa e destaque para quem se mexeu nos últimos
+    15 dias.
+- **Módulos**: Dashboard, NCRs, Produtos, Aging, Análise de Fluxo, Fluxos das NCRs, Histórico,
+  Importações, Arquivos e Configurações.
 - **Gravação segura**: backup automático antes de cada importação, escrita em duas etapas
   com verificação de leitura e recuperação automática a partir do backup se um JSON estiver corrompido.
 - **Configurável**: fluxo de status e ordens, faixas de aging, campos monitorados e retenção
