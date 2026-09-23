@@ -1018,6 +1018,8 @@ if(isWorker){
   const RE_ID = /\b([0-9a-f]{24})\b/ig;
   const TEMPO_LIMITE = 60000;           /* por NCR */
   const TENTATIVAS = 2;                 /* novas tentativas para NCR que falhou */
+  /* estados em que a NCR nao muda mais: nao precisam ser recapturadas */
+  const RE_FINAL = /closure|closed|cancelad/i;
 
   /* ---------------- armazenamento (IndexedDB do próprio site) ---------------- */
   let dbp = null;
@@ -1245,7 +1247,11 @@ if(isWorker){
     st.paralelo = Math.max(1, Math.min(6, +ui.paralelo.value || 1));
     st.rodando = true; st.parar = false; st.t0 = Date.now(); st.feitosNaSessao = 0;
     atualizarBotoes();
-    const pend = ids.filter(id => { const r = st.dados.get(id); return !r || (r.erro && (r.tentativas || 0) <= TENTATIVAS); });
+    /* "atualizar abertas": marca o instante da rodada uma unica vez; um
+       Continuar depois nao recaptura o que ja foi atualizado nela */
+    if(ui.abertas.checked){ if(!st.atualizarAntesDe){ st.atualizarAntesDe = new Date().toISOString(); await metaSet('atualizarAntesDe', st.atualizarAntesDe); } }
+    else if(st.atualizarAntesDe){ st.atualizarAntesDe = null; await metaSet('atualizarAntesDe', null); }
+    const pend = ids.filter(id => precisa(st.dados.get(id)));
     log('Iniciando: ' + pend.length + ' NCR(s) a capturar de ' + ids.length + ' (' + st.paralelo + ' em paralelo, modo ' + st.modo + ').');
     let i = 0, parouPorLogin = false;
     const quadros = [];
@@ -1265,10 +1271,15 @@ if(isWorker){
           log('✔ ' + rec.numero + ' · ' + rec.eventos.length + ' eventos · ' + ((Date.now()-t)/1000).toFixed(1) + ' s');
         }catch(e){
           if(e.message === 'interrompido'){ i--; break; }
-          const rec = {sysId:id, url:urlDe(id), capturadoEm:new Date().toISOString(), erro:e.message,
-                       tentativas:((ant && ant.tentativas) || 0) + 1};
-          st.dados.set(id, rec); await salvar(rec);
-          log('✖ ' + id + ' · ' + e.message, 'err');
+          if(ant && !ant.erro){
+            /* falhou ao atualizar: a captura anterior continua valendo */
+            log('✖ ' + (ant.numero || id) + ' · não atualizada (mantida a captura anterior) · ' + e.message, 'err');
+          } else {
+            const rec = {sysId:id, url:urlDe(id), capturadoEm:new Date().toISOString(), erro:e.message,
+                         tentativas:((ant && ant.tentativas) || 0) + 1};
+            st.dados.set(id, rec); await salvar(rec);
+            log('✖ ' + id + ' · ' + e.message, 'err');
+          }
           if(e.login || /quadro interno|bloqueou/.test(e.message)){ parouPorLogin = !!e.login; st.parar = true; }
         }
         painel();
@@ -1286,10 +1297,14 @@ if(isWorker){
     else log('Concluído: ' + c.ok + ' capturadas, ' + c.erro + ' com erro. Clique em "Baixar JSON".', 'ok');
   }
 
+  /* com a caixa marcada e a rodada ainda nao iniciada, "agora" serve de previa */
+  const limiteAtualizacao = () => st.atualizarAntesDe || (!st.rodando && ui.abertas && ui.abertas.checked ? new Date().toISOString() : null);
+  const aAtualizar = r => { const lim = limiteAtualizacao(); return !!(lim && r && !r.erro && !RE_FINAL.test(r.statusAtual || '') && r.capturadoEm < lim); };
+  const precisa = r => !r || (r.erro && (r.tentativas || 0) <= TENTATIVAS) || aAtualizar(r);
   function contagem(){
-    let ok = 0, erro = 0;
-    st.fila.forEach(id => { const r = st.dados.get(id); if(r){ if(r.erro) erro++; else ok++; } });
-    return {total:st.fila.length, ok, erro, pend: st.fila.length - ok - erro};
+    let ok = 0, erro = 0, atu = 0;
+    st.fila.forEach(id => { const r = st.dados.get(id); if(r){ if(r.erro) erro++; else if(aAtualizar(r)) atu++; else ok++; } });
+    return {total:st.fila.length, ok, erro, atu, pend: st.fila.length - ok - erro};
   }
 
   /* ---------------- exportação ---------------- */
@@ -1365,6 +1380,7 @@ if(isWorker){
   </div>
   <div class="lin">
     <label>Em paralelo <select data-r="paralelo"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+    <label title="Recaptura as NCRs já capturadas que ainda não estavam encerradas (CEDOC Closure/Closed); as encerradas são mantidas"><input type="checkbox" data-r="abertas"> Atualizar as abertas</label>
     <label>Modo <select data-r="modo"><option value="iframe" selected>Quadro interno</option><option value="janela">Janela</option></select></label>
   </div>
   <div class="lin">
@@ -1408,6 +1424,12 @@ if(isWorker){
       log('Progresso apagado.');
     };
     ui.lista.oninput = () => { contarLista(); painel(); };
+    /* desmarcar encerra a rodada de atualizacao; marcar de novo abre outra */
+    ui.abertas.onchange = async () => {
+      if(st.rodando) return;
+      if(!ui.abertas.checked && st.atualizarAntesDe){ st.atualizarAntesDe = null; await metaSet('atualizarAntesDe', null); }
+      painel();
+    };
   }
   function contarLista(){
     const n = extrairIds(ui.lista.value).length;
@@ -1418,7 +1440,7 @@ if(isWorker){
     ui.pausar.disabled = !st.rodando;
     ui.ini.disabled = st.rodando;
     const c = contagem();
-    ui.ini.textContent = (c.ok || c.erro) && c.pend + c.erro > 0 ? 'Continuar' : 'Iniciar';
+    ui.ini.textContent = (c.ok || c.erro) && c.pend > 0 ? 'Continuar' : 'Iniciar';
   }
   function painel(){
     const c = contagem();
@@ -1429,7 +1451,8 @@ if(isWorker){
       const min = Math.round(porNcr * c.pend / 60000);
       eta = ' · faltam ~' + (min < 1 ? '<1' : min) + ' min';
     }
-    ui.cont.textContent = c.total ? (c.ok + ' capturadas · ' + c.erro + ' com erro · ' + c.pend + ' pendentes de ' + c.total + eta) : '';
+    ui.cont.textContent = c.total ? (c.ok + ' capturadas · ' + c.erro + ' com erro · ' + c.pend + ' pendentes de ' + c.total
+      + (c.atu ? ' (' + c.atu + ' abertas a atualizar)' : '') + eta) : '';
     if(!st.rodando) atualizarBotoes();
   }
   function log(msg, cls){
@@ -1445,7 +1468,9 @@ if(isWorker){
   async function iniciar(){
     montar();
     try{
-      const [regs, fila] = await Promise.all([todos(), metaGet('fila')]);
+      const [regs, fila, antes] = await Promise.all([todos(), metaGet('fila'), metaGet('atualizarAntesDe')]);
+      st.atualizarAntesDe = antes || null;
+      ui.abertas.checked = !!st.atualizarAntesDe;
       (regs || []).forEach(r => st.dados.set(r.sysId, r));
       if(fila && fila.length){ ui.lista.value = fila.map(urlDe).join('\n'); }
       contarLista(); painel(); atualizarBotoes();
@@ -6205,6 +6230,11 @@ const Imp = (() => {
             <b>Continuar</b>: o que já foi capturado fica salvo no navegador.</li>
         <li>Aqui no NCR Control, clique em <b>Importar histórico extraído (.json)</b>.</li>
       </ol>
+      <div class="note small" style="margin-top:10px"><b>Atualizações futuras</b> — não é preciso capturar tudo de novo.
+      Cole o extrator no mesmo navegador (o progresso anterior continua lá), acrescente à lista os links das NCRs novas,
+      marque <b>Atualizar as abertas</b> e clique em <b>Iniciar</b>: ele captura só as NCRs novas e recaptura as que não
+      estavam encerradas (CEDOC Closure/Closed ficam como estão). Depois baixe o JSON e importe aqui; a captura mais
+      recente de cada NCR substitui a anterior.</div>
       <div class="note small" style="margin-top:10px">O extrator só lê as páginas que você já consegue abrir, com a sua sessão, e não
       altera nada no NCR Integrada. O arquivo final fica no seu computador.<br><br>
       Na importação, cada NCR tem a trajetória refeita com as datas exatas do sistema até o momento da captura. O que os Excel
