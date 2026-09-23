@@ -995,6 +995,471 @@ if(isWorker){
 })();
 </script>
 
+<!-- Extrator de histórico: copiado/baixado pela tela Importações e colado no Console do NCR Integrada -->
+<script id="extratorSrc" type="text/plain">
+/* ==========================================================================
+   NCR Control · Extrator de histórico do NCR Integrada
+   --------------------------------------------------------------------------
+   Cole este script no Console (F12) de uma página do NCR Integrada já logada.
+   Ele abre cada NCR da lista num quadro invisível do próprio site (mesma
+   sessão, nada sai do navegador), lê a aba "Histórico" — etapas, datas e
+   usuários — e gera um arquivo JSON para importar no NCR Control
+   (tela Importações → Histórico do sistema).
+   O progresso fica guardado no navegador: se a página fechar, é só colar o
+   script de novo e clicar em Continuar.
+   ========================================================================== */
+(function(){
+  'use strict';
+  if(window.__ncrExtrator){ window.__ncrExtrator.mostrar(); return; }
+
+  const VERSAO = 1;
+  const DBNAME = 'ncrControlExtrator';
+  /* o ID interno da NCR no sistema: 24 caracteres hexadecimais, no link ou solto */
+  const RE_ID = /\b([0-9a-f]{24})\b/ig;
+  const TEMPO_LIMITE = 60000;           /* por NCR */
+  const TENTATIVAS = 2;                 /* novas tentativas para NCR que falhou */
+
+  /* ---------------- armazenamento (IndexedDB do próprio site) ---------------- */
+  let dbp = null;
+  function db(){
+    if(dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      const r = indexedDB.open(DBNAME, 1);
+      r.onupgradeneeded = () => {
+        r.result.createObjectStore('ncrs', {keyPath:'sysId'});
+        r.result.createObjectStore('meta');
+      };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    return dbp;
+  }
+  async function tx(store, mode, fn){
+    const d = await db();
+    return new Promise((res, rej) => {
+      const t = d.transaction(store, mode);
+      const s = t.objectStore(store);
+      let out;
+      const req = fn(s);
+      if(req) req.onsuccess = () => { out = req.result; };
+      t.oncomplete = () => res(out);
+      t.onerror = () => rej(t.error);
+    });
+  }
+  const salvar = rec => tx('ncrs', 'readwrite', s => s.put(rec));
+  const todos = () => tx('ncrs', 'readonly', s => s.getAll());
+  const metaGet = k => tx('meta', 'readonly', s => s.get(k));
+  const metaSet = (k, v) => tx('meta', 'readwrite', s => s.put(v, k));
+  const limparTudo = async () => { await tx('ncrs', 'readwrite', s => s.clear()); await tx('meta', 'readwrite', s => s.clear()); };
+
+  /* ---------------- leitura da página de uma NCR ---------------- */
+  const txt = el => el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+
+  function dataISO(s){
+    const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\D+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/.exec(s || '');
+    if(!m) return null;
+    const d = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+    return isNaN(d) ? null : d.toISOString();
+  }
+
+  function boxPorTitulo(doc, re){
+    const hs = doc.querySelectorAll('.box-header h3, .box-header .box-title');
+    for(const h of hs) if(re.test(txt(h))) return h.closest('.box');
+    return null;
+  }
+
+  function acharTimeline(doc){
+    const box = boxPorTitulo(doc, /^hist[óo]rico/i);
+    if(box){ const ul = box.querySelector('ul.timeline'); if(ul) return ul; }
+    for(const ul of doc.querySelectorAll('ul.timeline'))
+      if(/hist[óo]rico de atividades/i.test(txt(ul))) return ul;
+    return null;
+  }
+
+  function tipoDe(texto, para){
+    if(/foi criada/i.test(texto)) return 'CRIACAO';
+    if(para) return 'STATUS';
+    if(/anexad/i.test(texto)) return 'ANEXO';
+    if(/removid/i.test(texto)) return 'REMOCAO';
+    if(/produto/i.test(texto)) return 'PRODUTO';
+    if(/respons[áa]vel/i.test(texto)) return 'RESPONSAVEL';
+    return 'OUTRO';
+  }
+
+  function lerEventos(ul){
+    const out = [];
+    ul.querySelectorAll(':scope > li').forEach(li => {
+      if(li.classList.contains('time-label')) return;
+      const item = li.querySelector('.timeline-item');
+      if(!item) return;
+      const icone = li.querySelector(':scope > i');
+      const fa = icone ? Array.from(icone.classList).find(c => /^fa-/.test(c)) || '' : '';
+      const dataTexto = txt(item.querySelector('.time'));
+      const corpo = item.querySelector('.timeline-body');
+      let statusDe = '';
+      const textos = [];
+      if(corpo){
+        corpo.querySelectorAll('p').forEach(p => {
+          const t = txt(p);
+          if(!statusDe && /^status\s*:/i.test(t)) statusDe = t.replace(/^status\s*:\s*/i, '');
+          else if(t) textos.push(t);
+        });
+        if(!textos.length && !corpo.querySelector('p')) textos.push(txt(corpo));
+      }
+      const texto = textos.join(' | ');
+      const m = /foi para o estado\s+(.+?)\s*$/i.exec(texto);
+      const para = m ? m[1] : null;
+      out.push({data:dataISO(dataTexto), dataTexto, usuario:txt(item.querySelector('.timeline-header')),
+                statusDe, texto, para, tipo:tipoDe(texto, para), icone:fa});
+    });
+    return out;
+  }
+
+  function lerCabecalho(doc){
+    const r = {numero:null, statusAtual:null, autor:null, solicitante:null};
+    const box = boxPorTitulo(doc, /status\s*\/\s*a[çc][õo]es/i);
+    if(box){
+      box.querySelectorAll('.box-body h4').forEach(h => {
+        const t = txt(h);
+        let m;
+        if((m = /^status\s*:\s*(.*)$/i.exec(t))) r.statusAtual = m[1];
+        else if((m = /^autor\s*:\s*(.*)$/i.exec(t))) r.autor = m[1];
+        else if((m = /^solicitante\s*:\s*(.*)$/i.exec(t))) r.solicitante = m[1];
+        else if(!r.numero && /\bNCR\b/i.test(t)) r.numero = t;
+      });
+    }
+    if(!r.numero){
+      const m = /\bNCR-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d{4}\b/.exec(txt(doc.body));
+      if(m) r.numero = m[0];
+    }
+    return r;
+  }
+
+  function lerMarcos(doc){
+    const out = [];
+    doc.querySelectorAll('ul.flowShart > li').forEach(li => {
+      const etapa = txt(li.querySelector('.flowShart__item-content'));
+      if(!etapa) return;
+      const dt = txt(li.querySelector('.flowShart__tooltip-item'));
+      out.push({etapa, data: dt ? dataISO(dt) : null});
+    });
+    return out;
+  }
+
+  /* devolve null enquanto a página ainda não terminou de montar */
+  function lerPagina(doc){
+    const ul = acharTimeline(doc);
+    if(!ul) return null;
+    const eventos = lerEventos(ul);
+    if(!eventos.length) return null;
+    const cab = lerCabecalho(doc);
+    if(!cab.numero) return null;
+    return Object.assign(cab, {eventos, marcos:lerMarcos(doc)});
+  }
+
+  function pareceLogin(win){
+    try{
+      const h = String(win.location.hash || '') + String(win.location.pathname || '');
+      if(/login|signin|entrar/i.test(h)) return true;
+      return !!win.document.querySelector('input[type=password]');
+    }catch(e){ return false; }
+  }
+
+  function clicarAbaHistorico(doc){
+    for(const a of doc.querySelectorAll('[role=tab], .nav-tabs a')){
+      if(/^hist[óo]rico$/i.test(txt(a)) && !a.__ncrClicado){ a.__ncrClicado = true; a.click(); return; }
+    }
+  }
+
+  /* ---------------- quadros de trabalho (iframe ou janela) ---------------- */
+  const espera = ms => new Promise(r => setTimeout(r, ms));
+  const urlDe = id => location.origin + '/#/ncr/' + id + '/editar';
+
+  function novoQuadro(k){
+    if(st.modo === 'janela'){
+      const w = window.open('about:blank', 'ncrExtrator' + k, 'width=1100,height=750');
+      if(!w) throw new Error('O navegador bloqueou a janela. Permita pop-ups para este site e tente de novo.');
+      return {win: () => w, fechar: () => { try{ w.close(); }catch(e){} },
+              ir: url => { w.location.replace(url); }};
+    }
+    const f = document.createElement('iframe');
+    f.style.cssText = 'position:fixed;left:-12000px;top:0;width:1280px;height:900px;border:0;visibility:hidden';
+    f.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(f);
+    return {win: () => f.contentWindow, fechar: () => f.remove(), ir: url => { f.src = url; }};
+  }
+
+  async function capturar(q, id){
+    /* passa por about:blank para forçar recarga completa da aplicação:
+       mudar só o "#/ncr/..." poderia reaproveitar a tela da NCR anterior */
+    q.ir('about:blank');
+    await espera(60);
+    q.ir(urlDe(id));
+    const t0 = Date.now();
+    let ultimo = -1, estavel = 0, chegou = 0;
+    while(Date.now() - t0 < TEMPO_LIMITE){
+      if(st.parar) throw new Error('interrompido');
+      await espera(500);
+      let win, doc;
+      try{ win = q.win(); doc = win.document; void win.location.href; }
+      catch(e){ throw new Error('O site não permite abrir a NCR num quadro interno. Use o modo "Janela".'); }
+      if(!doc) continue;
+      if(!chegou){
+        if(!String(win.location.hash).includes(id)) continue;
+        chegou = Date.now();
+      }
+      if(pareceLogin(win)) { const e = new Error('Sessão expirada: faça login de novo e clique em Continuar.'); e.login = true; throw e; }
+      const r = lerPagina(doc);
+      if(!r){
+        /* histórico ainda ausente depois de alguns segundos: abre a aba, caso
+           a tela só busque os dados quando ela é exibida */
+        if(Date.now() - chegou > 4000) clicarAbaHistorico(doc);
+        continue;
+      }
+      /* a lista de eventos às vezes chega em partes: espera ela parar de crescer */
+      if(r.eventos.length === ultimo){ if(++estavel >= 2) return r; }
+      else { ultimo = r.eventos.length; estavel = 0; }
+    }
+    throw new Error('Tempo esgotado (' + TEMPO_LIMITE/1000 + ' s) esperando a página carregar');
+  }
+
+  /* ---------------- estado e execução ---------------- */
+  const st = {fila:[], dados:new Map(), rodando:false, parar:false, modo:'iframe', paralelo:2, t0:0, feitosNaSessao:0};
+
+  function extrairIds(texto){
+    const ids = [], vistos = new Set();
+    const add = id => { id = id.toLowerCase(); if(!vistos.has(id)){ vistos.add(id); ids.push(id); } };
+    let m;
+    RE_ID.lastIndex = 0;
+    while((m = RE_ID.exec(texto))) add(m[1]);
+    return ids;
+  }
+
+  async function executar(){
+    if(st.rodando) return;
+    const ids = extrairIds(ui.lista.value);
+    if(!ids.length){ log('Cole a lista de links (ou IDs) das NCRs antes de iniciar.', 'err'); return; }
+    st.fila = ids;
+    await metaSet('fila', ids);
+    st.modo = ui.modo.value;
+    st.paralelo = Math.max(1, Math.min(6, +ui.paralelo.value || 1));
+    st.rodando = true; st.parar = false; st.t0 = Date.now(); st.feitosNaSessao = 0;
+    atualizarBotoes();
+    const pend = ids.filter(id => { const r = st.dados.get(id); return !r || (r.erro && (r.tentativas || 0) <= TENTATIVAS); });
+    log('Iniciando: ' + pend.length + ' NCR(s) a capturar de ' + ids.length + ' (' + st.paralelo + ' em paralelo, modo ' + st.modo + ').');
+    let i = 0, parouPorLogin = false;
+    const quadros = [];
+    async function trabalhador(k){
+      let q;
+      try{ q = novoQuadro(k); quadros.push(q); }
+      catch(e){ log(e.message, 'err'); st.parar = true; return; }
+      while(!st.parar && i < pend.length){
+        const id = pend[i++];
+        const ant = st.dados.get(id);
+        const t = Date.now();
+        try{
+          const r = await capturar(q, id);
+          const rec = Object.assign({sysId:id, url:urlDe(id), capturadoEm:new Date().toISOString()}, r);
+          st.dados.set(id, rec); await salvar(rec);
+          st.feitosNaSessao++;
+          log('✔ ' + rec.numero + ' · ' + rec.eventos.length + ' eventos · ' + ((Date.now()-t)/1000).toFixed(1) + ' s');
+        }catch(e){
+          if(e.message === 'interrompido'){ i--; break; }
+          const rec = {sysId:id, url:urlDe(id), capturadoEm:new Date().toISOString(), erro:e.message,
+                       tentativas:((ant && ant.tentativas) || 0) + 1};
+          st.dados.set(id, rec); await salvar(rec);
+          log('✖ ' + id + ' · ' + e.message, 'err');
+          if(e.login || /quadro interno|bloqueou/.test(e.message)){ parouPorLogin = !!e.login; st.parar = true; }
+        }
+        painel();
+      }
+    }
+    const ws = [];
+    for(let k = 0; k < st.paralelo; k++){ ws.push(trabalhador(k)); await espera(400); }
+    await Promise.all(ws);
+    quadros.forEach(q => q.fechar());
+    st.rodando = false;
+    atualizarBotoes(); painel();
+    const c = contagem();
+    if(parouPorLogin) log('Pausado: a sessão expirou. Faça login em outra aba e clique em Continuar.', 'err');
+    else if(st.parar) log('Pausado. ' + c.ok + ' capturadas até agora; clique em Continuar para seguir.');
+    else log('Concluído: ' + c.ok + ' capturadas, ' + c.erro + ' com erro. Clique em "Baixar JSON".', 'ok');
+  }
+
+  function contagem(){
+    let ok = 0, erro = 0;
+    st.fila.forEach(id => { const r = st.dados.get(id); if(r){ if(r.erro) erro++; else ok++; } });
+    return {total:st.fila.length, ok, erro, pend: st.fila.length - ok - erro};
+  }
+
+  /* ---------------- exportação ---------------- */
+  function registros(){
+    const ids = st.fila.length ? st.fila : Array.from(st.dados.keys());
+    return ids.map(id => st.dados.get(id)).filter(Boolean);
+  }
+  function baixar(nome, conteudo, tipo){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([conteudo], {type:tipo}));
+    a.download = nome;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  }
+  const carimbo = () => new Date().toISOString().slice(0,16).replace(/[-:T]/g, '');
+  function baixarJSON(){
+    const regs = registros();
+    if(!regs.length){ log('Nada capturado ainda.', 'err'); return; }
+    const ok = regs.filter(r => !r.erro);
+    baixar('historico_ncr_sistema_' + carimbo() + '.json', JSON.stringify({
+      tipo:'ncr-control/historico-sistema', versao:VERSAO, origem:location.origin,
+      geradoEm:new Date().toISOString(), total:regs.length, capturadas:ok.length,
+      comErro:regs.length - ok.length, ncrs:regs}), 'application/json');
+    log('JSON gerado com ' + ok.length + ' NCR(s) capturadas.', 'ok');
+  }
+  function baixarCSV(){
+    const regs = registros().filter(r => !r.erro);
+    if(!regs.length){ log('Nada capturado ainda.', 'err'); return; }
+    const q = v => { v = v == null ? '' : String(v); return /[;"\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const linhas = [['NCR','Status atual','Data','Usuário','Status no momento','Para o estado','Tipo','Descrição','Link'].join(';')];
+    regs.forEach(r => r.eventos.slice().reverse().forEach(e => linhas.push([
+      r.numero, r.statusAtual, e.dataTexto, e.usuario, e.statusDe, e.para || '', e.tipo, e.texto, r.url].map(q).join(';'))));
+    baixar('historico_ncr_sistema_' + carimbo() + '.csv', '﻿' + linhas.join('\r\n'), 'text/csv;charset=utf-8');
+  }
+
+  /* ---------------- painel ---------------- */
+  const ui = {};
+  function montar(){
+    const host = document.createElement('div');
+    host.id = 'ncrExtratorPainel';
+    host.innerHTML = `
+<style>
+#ncrExtratorPainel{position:fixed;right:16px;bottom:16px;width:440px;max-width:calc(100vw - 32px);z-index:2147483000;
+  background:#fff;color:#1d2330;border:1px solid #c9d1de;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.25);
+  font:13px/1.4 system-ui,Segoe UI,Arial,sans-serif}
+#ncrExtratorPainel *{box-sizing:border-box}
+#ncrExtratorPainel .hd{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1f4e8c;color:#fff;border-radius:10px 10px 0 0}
+#ncrExtratorPainel .hd b{flex:1;font-size:14px}
+#ncrExtratorPainel .hd button{background:transparent;border:0;color:#fff;font-size:16px;cursor:pointer;padding:0 4px}
+#ncrExtratorPainel .bd{padding:10px 12px}
+#ncrExtratorPainel textarea{width:100%;height:84px;font:11px/1.3 Consolas,monospace;border:1px solid #c9d1de;border-radius:6px;padding:6px;resize:vertical}
+#ncrExtratorPainel .lin{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+#ncrExtratorPainel select,#ncrExtratorPainel input{font:inherit;border:1px solid #c9d1de;border-radius:6px;padding:3px 6px}
+#ncrExtratorPainel .btn{font:inherit;border:1px solid #c9d1de;background:#f4f6fa;border-radius:6px;padding:5px 10px;cursor:pointer}
+#ncrExtratorPainel .btn.pri{background:#1f4e8c;border-color:#1f4e8c;color:#fff}
+#ncrExtratorPainel .btn:disabled{opacity:.45;cursor:default}
+#ncrExtratorPainel .barra{height:8px;background:#e6eaf1;border-radius:4px;overflow:hidden;margin-top:10px}
+#ncrExtratorPainel .barra i{display:block;height:100%;width:0;background:#2e8b57;transition:width .3s}
+#ncrExtratorPainel .num{font-variant-numeric:tabular-nums;color:#4a5568;font-size:12px;margin-top:4px}
+#ncrExtratorPainel .log{height:120px;overflow:auto;background:#f7f8fb;border:1px solid #e1e6ee;border-radius:6px;margin-top:8px;padding:6px;
+  font:11px/1.35 Consolas,monospace;white-space:pre-wrap}
+#ncrExtratorPainel .log .err{color:#b42318}#ncrExtratorPainel .log .ok{color:#1b7a43}
+#ncrExtratorPainel .dica{font-size:11px;color:#5b6577;margin-top:6px}
+#ncrExtratorPainel.min .bd{display:none}
+</style>
+<div class="hd"><b>Extrator de histórico · NCR Control</b><button data-a="min" title="Minimizar">–</button><button data-a="fechar" title="Fechar">×</button></div>
+<div class="bd">
+  <div>Links ou IDs das NCRs (um por linha):</div>
+  <textarea data-r="lista" placeholder="http://.../#/ncr/65f05c75e753f10020060ca6/editar"></textarea>
+  <div class="lin">
+    <button class="btn" data-a="pegar" title="Captura os links de NCR presentes na página aberta agora">Pegar links desta página</button>
+    <span data-r="qtd" class="num"></span>
+  </div>
+  <div class="lin">
+    <label>Em paralelo <select data-r="paralelo"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+    <label>Modo <select data-r="modo"><option value="iframe" selected>Quadro interno</option><option value="janela">Janela</option></select></label>
+  </div>
+  <div class="lin">
+    <button class="btn pri" data-a="ini">Iniciar</button>
+    <button class="btn" data-a="pausar" disabled>Pausar</button>
+    <button class="btn" data-a="json">Baixar JSON</button>
+    <button class="btn" data-a="csv">CSV</button>
+    <button class="btn" data-a="zerar" title="Apaga o progresso guardado neste navegador">Limpar</button>
+  </div>
+  <div class="barra"><i data-r="barra"></i></div>
+  <div class="num" data-r="cont"></div>
+  <div class="log" data-r="log"></div>
+  <div class="dica">Mantenha esta aba aberta. O progresso fica salvo: se fechar, cole o script de novo e clique em Continuar.
+  Teste primeiro com 2 ou 3 links.</div>
+</div>`;
+    document.body.appendChild(host);
+    ui.host = host;
+    host.querySelectorAll('[data-r]').forEach(el => { ui[el.dataset.r] = el; });
+    const bt = a => host.querySelector('[data-a="' + a + '"]');
+    ui.ini = bt('ini'); ui.pausar = bt('pausar');
+    bt('min').onclick = () => host.classList.toggle('min');
+    bt('fechar').onclick = () => { if(st.rodando && !confirm('A captura está em andamento. Parar e fechar?')) return; st.parar = true; host.remove(); delete window.__ncrExtrator; };
+    bt('pegar').onclick = () => {
+      const hrefs = Array.from(document.querySelectorAll('a[href*="#/ncr/"]')).map(a => a.href);
+      const ids = extrairIds(hrefs.join('\n'));
+      if(!ids.length){ log('Nenhum link de NCR encontrado nesta página.', 'err'); return; }
+      const atuais = extrairIds(ui.lista.value);
+      const novos = ids.filter(id => atuais.indexOf(id) < 0);
+      ui.lista.value = (ui.lista.value.trim() ? ui.lista.value.trim() + '\n' : '') + novos.map(urlDe).join('\n');
+      contarLista();
+      log(novos.length + ' link(s) adicionados.');
+    };
+    ui.ini.onclick = () => executar();
+    ui.pausar.onclick = () => { st.parar = true; log('Pausando depois das NCRs em andamento…'); };
+    bt('json').onclick = baixarJSON;
+    bt('csv').onclick = baixarCSV;
+    bt('zerar').onclick = async () => {
+      if(st.rodando) return;
+      if(!confirm('Apagar todo o progresso guardado neste navegador?')) return;
+      await limparTudo(); st.dados.clear(); st.fila = []; ui.lista.value = ''; contarLista(); painel();
+      log('Progresso apagado.');
+    };
+    ui.lista.oninput = () => { contarLista(); painel(); };
+  }
+  function contarLista(){
+    const n = extrairIds(ui.lista.value).length;
+    ui.qtd.textContent = n ? n + ' NCR(s) na lista' : '';
+    if(!st.rodando) st.fila = extrairIds(ui.lista.value);
+  }
+  function atualizarBotoes(){
+    ui.pausar.disabled = !st.rodando;
+    ui.ini.disabled = st.rodando;
+    const c = contagem();
+    ui.ini.textContent = (c.ok || c.erro) && c.pend + c.erro > 0 ? 'Continuar' : 'Iniciar';
+  }
+  function painel(){
+    const c = contagem();
+    ui.barra.style.width = (c.total ? (c.ok + c.erro) / c.total * 100 : 0) + '%';
+    let eta = '';
+    if(st.rodando && st.feitosNaSessao > 2){
+      const porNcr = (Date.now() - st.t0) / st.feitosNaSessao;
+      const min = Math.round(porNcr * c.pend / 60000);
+      eta = ' · faltam ~' + (min < 1 ? '<1' : min) + ' min';
+    }
+    ui.cont.textContent = c.total ? (c.ok + ' capturadas · ' + c.erro + ' com erro · ' + c.pend + ' pendentes de ' + c.total + eta) : '';
+    if(!st.rodando) atualizarBotoes();
+  }
+  function log(msg, cls){
+    if(!ui.log) { console.log('[Extrator NCR] ' + msg); return; }
+    const d = document.createElement('div');
+    if(cls) d.className = cls;
+    d.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    ui.log.appendChild(d);
+    while(ui.log.childNodes.length > 400) ui.log.removeChild(ui.log.firstChild);
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+
+  async function iniciar(){
+    montar();
+    try{
+      const [regs, fila] = await Promise.all([todos(), metaGet('fila')]);
+      (regs || []).forEach(r => st.dados.set(r.sysId, r));
+      if(fila && fila.length){ ui.lista.value = fila.map(urlDe).join('\n'); }
+      contarLista(); painel(); atualizarBotoes();
+      if(regs && regs.length) log('Progresso anterior recuperado: ' + regs.filter(r => !r.erro).length + ' NCR(s) já capturadas.');
+      else log('Pronto. Cole a lista de links e clique em Iniciar.');
+    }catch(e){ log('Não foi possível ler o progresso salvo: ' + e.message, 'err'); }
+  }
+
+  window.__ncrExtrator = {mostrar(){ if(ui.host){ ui.host.classList.remove('min'); if(!ui.host.isConnected) document.body.appendChild(ui.host); } },
+                          lerPagina, dados:st.dados};
+  iniciar();
+})();
+</script>
+
 <script>
 "use strict";
 /* ==========================================================================
@@ -1641,6 +2106,7 @@ const DB = (() => {
     historico: [],       /* eventos */
     arquivos: {},        /* hash -> registro de arquivo processado */
     importacoes: [],     /* log de importacoes */
+    sistema: {},         /* chave da NCR -> historico capturado do NCR Integrada */
     meta: {criadoEm:null, atualizadoEm:null, versao:2}
   };
   const idx = {histPorNcr: new Map(), prodPorNcr: new Map(), prodPorProduto: new Map(),
@@ -1687,7 +2153,7 @@ const DB = (() => {
   const campos = () => idx.campos.slice();
 
   async function load(){
-    const files = ['configuracao','ncr','produtos','historico','arquivos_processados','importacoes'];
+    const files = ['configuracao','ncr','produtos','historico','arquivos_processados','importacoes','historico_sistema'];
     const res = {};
     for(const f of files){
       try{ res[f] = await Store.readJSON(f + '.json'); }
@@ -1703,6 +2169,7 @@ const DB = (() => {
     d.historico = (res.historico && res.historico.eventos) || [];
     d.arquivos = (res.arquivos_processados && res.arquivos_processados.registros) || {};
     d.importacoes = (res.importacoes && res.importacoes.registros) || [];
+    d.sistema = (res.historico_sistema && res.historico_sistema.registros) || {};
     d.meta = (res.ncr && res.ncr.meta) || d.meta;
     idx.carregado = true;
     reindex();
@@ -1718,7 +2185,7 @@ const DB = (() => {
             meta:d.meta, registros:registros};
   }
   async function save(parts){
-    parts = parts || ['config','ncr','produtos','historico','arquivos','importacoes'];
+    parts = parts || ['config','ncr','produtos','historico','arquivos','importacoes','sistema'];
     d.meta.atualizadoEm = new Date().toISOString();
     if(!d.meta.criadoEm) d.meta.criadoEm = d.meta.atualizadoEm;
     const ops = [];
@@ -1728,12 +2195,13 @@ const DB = (() => {
     if(parts.indexOf('historico') >= 0) ops.push(['historico.json', {tipo:'historico', versao:2, gravadoEm:d.meta.atualizadoEm, total:d.historico.length, eventos:d.historico}]);
     if(parts.indexOf('arquivos') >= 0) ops.push(['arquivos_processados.json', envelope('arquivos_processados', d.arquivos)]);
     if(parts.indexOf('importacoes') >= 0) ops.push(['importacoes.json', envelope('importacoes', d.importacoes)]);
+    if(parts.indexOf('sistema') >= 0) ops.push(['historico_sistema.json', envelope('historico_sistema', d.sistema)]);
     let bytes = 0;
     for(const [name, obj] of ops) bytes += await Store.writeJSON(name, obj);
     return bytes;
   }
   function limpar(){
-    d.ncrs = {}; d.produtos = {}; d.historico = []; d.arquivos = {}; d.importacoes = [];
+    d.ncrs = {}; d.produtos = {}; d.historico = []; d.arquivos = {}; d.importacoes = []; d.sistema = {};
     d.meta = {criadoEm:null, atualizadoEm:null, versao:2};
     reindex();
   }
@@ -1743,12 +2211,14 @@ const DB = (() => {
     d.ncrs = snap.ncr || {}; d.produtos = snap.produtos || {};
     d.historico = snap.historico || []; d.arquivos = snap.arquivos_processados || {};
     d.importacoes = snap.importacoes || [];
+    d.sistema = snap.historico_sistema || {};
     d.meta = snap.meta || d.meta;
     reindex();
   }
   function snapshot(){
     return {gerado: new Date().toISOString(), meta:d.meta, configuracao:d.config, ncr:d.ncrs,
-            produtos:d.produtos, historico:d.historico, arquivos_processados:d.arquivos, importacoes:d.importacoes};
+            produtos:d.produtos, historico:d.historico, arquivos_processados:d.arquivos, importacoes:d.importacoes,
+            historico_sistema:d.sistema};
   }
   return {all, cfg, load, save, reindex, contagem, eventos, produtosDe, ncrsDeProduto,
           listaNcrs, campos, limpar, snapshot, importarSnapshot, idx};
@@ -1758,7 +2228,7 @@ const DB = (() => {
 const Backup = (() => {
   async function criar(motivo){
     const dd = DB.all();
-    if(!Object.keys(dd.ncrs).length && !dd.historico.length) return null;   /* nada a preservar */
+    if(!Object.keys(dd.ncrs).length && !dd.historico.length && !Object.keys(dd.sistema).length) return null;   /* nada a preservar */
     const name = 'backup_' + Util.stamp() + '.json';
     const snap = DB.snapshot();
     snap.motivo = motivo || 'manual';
@@ -1831,11 +2301,14 @@ const History = (() => {
     return out;
   }
   function evento(o){
-    return {id: Util.uid(), ncr:o.ncr, data:o.data, tipo:o.tipo, campo:o.campo||null,
+    const ev = {id: Util.uid(), ncr:o.ncr, data:o.data, tipo:o.tipo, campo:o.campo||null,
             de:o.de==null?null:o.de, para:o.para==null?null:o.para,
             cls:o.cls||null, ordemDe:o.ordemDe==null?null:o.ordemDe, ordemPara:o.ordemPara==null?null:o.ordemPara,
             arquivo:o.arquivo||null, importId:o.importId||null, obs:o.obs||null,
             estimado:o.estimado?1:0};
+    /* origem do dado quando nao e um Excel (ex.: 'SISTEMA' = aba Historico do NCR Integrada) */
+    if(o.fonte) ev.fonte = o.fonte;
+    return ev;
   }
   return {diff, evento, monitorados, invalidarCache};
 })();
@@ -2675,6 +3148,13 @@ const Importer = (() => {
     }
     if(d.importacoes.length > 400) d.importacoes = d.importacoes.slice(0,400);
     DB.reindex();
+    /* o historico capturado do sistema tem as datas exatas: prevalece sobre o
+       que o Excel acabou de reconstruir ou deduzir ate a data da captura
+       (inclusive para NCRs que so agora entraram no banco) */
+    if(resultados.some(r => !r.ignorado && !r.falhou)){
+      const rs = SistemaHist.reaplicar();
+      resultados.forEach(r => { if(!r.ignorado && !r.falhou && rs.aplicadas) r.avisos.push('Histórico do sistema reaplicado em ' + rs.aplicadas + ' NCR(s).'); });
+    }
     const houve = resultados.some(r => !r.ignorado && !r.falhou);
     if(houve){
       ui && ui.salvando();
@@ -2685,6 +3165,224 @@ const Importer = (() => {
   function cancelar(){ cancelado = true; }
   const usandoWorker = () => workerOk === true;
   return {processar, cancelar, lerArquivo, identificar, chaveNcr, initWorker, usandoWorker, analisarPlanilha};
+})();
+
+/* ============================ Histórico do sistema (NCR Integrada) ============================
+   A aba "Histórico" de cada NCR no NCR Integrada registra, com data e hora
+   exatas, cada mudança de estado ("A NCR foi para o estado 6.1 - CQ") e quem a
+   fez. O extrator embutido neste arquivo (script colado no Console do site)
+   percorre as NCRs e gera um JSON; aqui esse JSON é guardado em
+   BD/historico_sistema.json e usado para CORRIGIR a trajetória:
+   - todo evento de fluxo da NCR até a data da captura (colunas datadas do
+     Excel, datas estimadas, mudanças vistas entre duas fotos) é substituído
+     pelas transições reais do sistema;
+   - o que o Excel registrar DEPOIS da captura continua valendo;
+   - visitas, contadores, "status desde" e última movimentação são
+     recalculados a partir da trajetória corrigida.
+   A correção é reaplicada depois de cada importação de Excel, então uma NCR
+   que só entra no banco mais tarde já chega com o histórico certo.
+   ============================================================================================== */
+const SistemaHist = (() => {
+  const FONTE = 'SISTEMA';
+  const ROTULO = 'Histórico do sistema';
+  const TIPO_ARQ = 'ncr-control/historico-sistema';
+  const n = s => Util.norm(s || '');
+
+  /* chave alternativa so com letras e digitos: tolera "NCR ICN ESC 14 0195 2024" x "NCR-ICN-ESC-14-0195-2024" */
+  const chaveSolta = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  function localizar(numero){
+    const d = DB.all();
+    const k = Importer.chaveNcr(numero);
+    if(d.ncrs[k]) return k;
+    const alvo = chaveSolta(numero);
+    for(const kk in d.ncrs) if(chaveSolta(kk) === alvo) return kk;
+    return k;
+  }
+
+  /* registro compacto guardado no banco: so o necessario para a trajetoria
+     e para conferencia (o texto de anexos e afins fica de fora) */
+  function compactar(r){
+    return {numero:r.numero, sysId:r.sysId || null, url:r.url || null, capturadoEm:r.capturadoEm,
+      statusAtual:r.statusAtual || null, autor:r.autor || null,
+      eventos:(r.eventos || []).filter(e => e && e.data && (e.tipo === 'STATUS' || e.tipo === 'CRIACAO'))
+        .map(e => ({data:e.data, usuario:e.usuario || '', de:e.statusDe || '', para:e.para || null, tipo:e.tipo})),
+      outros:(r.eventos || []).filter(e => e && e.tipo !== 'STATUS' && e.tipo !== 'CRIACAO').length,
+      marcos:(r.marcos || []).filter(m => m && m.data)};
+  }
+
+  /* transicoes em ordem cronologica. A pagina lista do mais novo para o mais
+     antigo; no mesmo segundo, a ordem da pagina desempata (invertida). */
+  function transicoes(h){
+    const evs = (h.eventos || []).map((e, i) => Object.assign({i}, e))
+      .sort((a, b) => Util.cmp(a.data, b.data) || (b.i - a.i));
+    const out = [];
+    let atual = null;
+    const abertura = () => { let m = null, o = Infinity; (DB.cfg().fluxo || []).forEach(f => { if(+f.ordem < o){ o = +f.ordem; m = f.status; } }); return m; };
+    evs.forEach(e => {
+      if(e.tipo === 'CRIACAO'){
+        if(out.length) return;
+        atual = e.de || abertura();
+        out.push({data:e.data, de:null, para:atual, usuario:e.usuario, criacao:true});
+        return;
+      }
+      if(e.tipo !== 'STATUS' || !e.para) return;
+      if(!out.length){
+        atual = e.de || abertura();
+        out.push({data:e.data, de:null, para:atual, usuario:'', criacao:false});
+      }
+      if(n(e.para) === n(atual)) return;          /* reenvio para o mesmo estado: nao e movimento */
+      out.push({data:e.data, de:atual, para:e.para, usuario:e.usuario, deRegistrado:e.de});
+      atual = e.para;
+    });
+    return out;
+  }
+
+  function contarMov(mov, cls){
+    mov.total++;
+    if(cls === 'AVANCO') mov.avancos++;
+    else if(cls === 'RETORNO') mov.retornos++;
+    else if(cls === 'LATERAL') mov.laterais++;
+    else if(cls === 'FECHAMENTO') mov.fechamentos++;
+    else if(cls === 'REABERTURA') mov.reaberturas++;
+  }
+
+  /* refaz visitas/contadores/datas da NCR a partir da trajetoria ja corrigida;
+     devolve os ids de eventos redundantes (mesmo status repetido) a remover */
+  function recalcular(rec, h){
+    const ev = DB.eventos(rec.key).filter(Flow.isFluxoEvt);
+    const drop = [];
+    const visitas = {};
+    const mov = {avancos:0, retornos:0, laterais:0, fechamentos:0, reaberturas:0, total:0, campos:(rec.mov && rec.mov.campos) || 0};
+    let atual = null, desde = null, primeira = null, ultima = null;
+    ev.forEach(e => {
+      if(!e.para) return;
+      if(atual && n(e.para) === n(atual)){ if(e.fonte !== FONTE) drop.push(e.id); return; }
+      if(atual && desde) visitas[atual].ms += Math.max(0, new Date(e.data) - new Date(desde));
+      if(atual && e.fonte !== FONTE && n(e.de) !== n(atual)){
+        /* evento do Excel posterior a captura: passa a partir do estado real */
+        e.de = atual; e.ordemDe = Flow.ordemInferida(atual);
+        e.cls = Flow.classificar(atual, e.para);
+      }
+      if(!visitas[e.para]) visitas[e.para] = {n:0, ms:0};
+      visitas[e.para].n++;
+      if(atual) contarMov(mov, e.cls);
+      atual = e.para; desde = e.data;
+      if(!primeira) primeira = e.data;
+      ultima = e.data;
+    });
+    if(!atual) return drop;
+    rec.visitas = visitas;
+    rec.mov = mov;
+    /* o sistema e mais recente que a ultima foto do Excel: o status dele vale */
+    if(h.capturadoEm >= (rec.ultimaVez || '') && n(atual) !== n(rec.status)){
+      rec.status = atual; rec.ordem = Flow.ordemDe(atual); rec.fechada = Flow.isFinal(atual);
+    }
+    if(n(atual) === n(rec.status)) rec.statusDesde = desde;
+    if(primeira && (!rec.primeiraVez || primeira < rec.primeiraVez)) rec.primeiraVez = primeira;
+    let ua = ultima;
+    DB.eventos(rec.key).forEach(e => { if(!Flow.isFluxoEvt(e) && e.data > h.capturadoEm && e.data > ua) ua = e.data; });
+    rec.ultimaAlteracao = ua;
+    delete rec.reconstruida;
+    rec.sistema = {capturadoEm:h.capturadoEm, sysId:h.sysId, url:h.url, transicoes:Math.max(0, ev.length - drop.length - 1)};
+    return drop;
+  }
+
+  /* aplica o historico do sistema as NCRs indicadas (todas por padrao) */
+  function aplicar(keys){
+    const d = DB.all();
+    keys = keys || Object.keys(d.sistema);
+    const alvo = new Map();
+    let semNcr = 0, semTransicao = 0;
+    keys.forEach(k => {
+      const h = d.sistema[k], rec = d.ncrs[k];
+      if(!h) return;
+      if(!rec){ semNcr++; return; }
+      const t = transicoes(h);
+      if(!t.length){ semTransicao++; return; }
+      alvo.set(k, {rec, h, t});
+    });
+    if(!alvo.size) return {aplicadas:0, semNcr, semTransicao, eventos:0, removidos:0, statusAtualizado:0};
+    const antes = d.historico.length;
+    d.historico = d.historico.filter(e => {
+      const a = alvo.get(e.ncr);
+      return !(a && Flow.isFluxoEvt(e) && e.data <= a.h.capturadoEm);
+    });
+    const removidos = antes - d.historico.length;
+    const novos = [];
+    alvo.forEach((a, k) => {
+      a.t.forEach(t => {
+        const cls = t.de == null ? 'INICIAL' : Flow.classificar(t.de, t.para);
+        novos.push(History.evento({ncr:k, data:t.data, tipo:'MARCO', campo:'Status', de:t.de, para:t.para, cls,
+          ordemDe: t.de == null ? null : Flow.ordemInferida(t.de), ordemPara: Flow.ordemInferida(t.para),
+          arquivo:ROTULO, fonte:FONTE,
+          /* o "Status:" da pagina as vezes ja mostra o estado de destino; so
+             vale anotar quando ele diverge de origem e destino */
+          obs: (t.usuario ? 'Por ' + t.usuario : ROTULO)
+             + (t.de == null && !t.criacao ? ' · estado inicial deduzido da primeira mudança registrada' : '')
+             + (t.deRegistrado && n(t.deRegistrado) !== n(t.de) && n(t.deRegistrado) !== n(t.para)
+                ? ' · o sistema registra saída de "' + t.deRegistrado + '"' : '')}));
+      });
+    });
+    d.historico = d.historico.concat(novos);
+    DB.reindex();
+    let drop = [], statusAtualizado = 0;
+    alvo.forEach(a => {
+      const st = a.rec.status;
+      drop = drop.concat(recalcular(a.rec, a.h));
+      if(n(st) !== n(a.rec.status)) statusAtualizado++;
+    });
+    if(drop.length){
+      const s = new Set(drop);
+      d.historico = d.historico.filter(e => !s.has(e.id));
+      DB.reindex();
+    }
+    return {aplicadas:alvo.size, semNcr, semTransicao, eventos:novos.length, removidos: removidos + drop.length, statusAtualizado};
+  }
+  const reaplicar = () => aplicar();
+
+  /* ---------- leitura do JSON gerado pelo extrator ---------- */
+  function mesclar(obj){
+    if(!obj || obj.tipo !== TIPO_ARQ || !Array.isArray(obj.ncrs))
+      throw new Error('Este arquivo não é um histórico gerado pelo extrator do NCR Control.');
+    const d = DB.all();
+    const r = {lidas:obj.ncrs.length, capturadas:0, errosExtracao:0, novas:0, atualizadas:0, maisAntigas:0,
+               semNumero:0, keys:[], foraDoBanco:[]};
+    obj.ncrs.forEach(x => {
+      if(!x || x.erro){ r.errosExtracao++; return; }
+      if(!x.numero || !x.capturadoEm){ r.semNumero++; return; }
+      r.capturadas++;
+      const k = localizar(x.numero);
+      const prev = d.sistema[k];
+      if(prev && prev.capturadoEm > x.capturadoEm){ r.maisAntigas++; return; }
+      d.sistema[k] = compactar(x);
+      if(prev) r.atualizadas++; else r.novas++;
+      r.keys.push(k);
+      if(!d.ncrs[k]) r.foraDoBanco.push(x.numero);
+    });
+    return r;
+  }
+
+  async function importar(file){
+    const texto = await file.text();
+    let obj;
+    try{ obj = JSON.parse(texto); }catch(e){ throw new Error('JSON inválido: ' + e.message); }
+    let backup = null;
+    try{ backup = await Backup.criar('antes-do-historico-do-sistema'); }catch(e){ /* segue sem backup */ }
+    const r = mesclar(obj);
+    const a = aplicar(r.keys);
+    await DB.save();
+    return Object.assign(r, {aplicacao:a, backup, origem:obj.origem, geradoEm:obj.geradoEm});
+  }
+
+  function resumo(){
+    const d = DB.all();
+    const ks = Object.keys(d.sistema);
+    let noBanco = 0, ultima = null;
+    ks.forEach(k => { if(d.ncrs[k]) noBanco++; const c = d.sistema[k].capturadoEm; if(!ultima || c > ultima) ultima = c; });
+    return {total:ks.length, noBanco, fora:ks.length - noBanco, ultima, ncrs:Object.keys(d.ncrs).length};
+  }
+  const script = () => document.getElementById('extratorSrc').textContent.trim() + '\n';
+  return {importar, aplicar, reaplicar, resumo, script, transicoes, FONTE, ROTULO};
 })();
 
 /* ============================ Charts (SVG proprio, sem dependencias) ============================ */
@@ -4649,6 +5347,7 @@ const Detalhe = (() => {
       sub: badgeStatus(rec) + ' <span class="badge ord">' + esc(Flow.etapa(rec.ordem)) + '</span> '
          + (m.retornos ? '<span class="mv mv-RETORNO">↩ '+m.retornos+' retorno(s)</span> ' : '')
          + (!rec.fechada && m.diasMov >= (DB.cfg().semMovimentacaoDias||30) ? '<span class="badge warn">parada há '+m.diasMov+' dias</span>' : '')
+         + (rec.sistema ? ' <span class="badge new" title="trajetória com as datas exatas da aba Histórico do NCR Integrada">histórico do sistema · capturado em '+Util.fDate(rec.sistema.capturadoEm)+'</span>' : '')
          + (rec.reconstruida ? ' <span class="badge new" title="trajetória lida das colunas datadas do próprio export, e não apenas de importações sucessivas">trajetória reconstruída de '+rec.reconstruida+' marcos</span>' : ''),
       body,
       footer: '<button class="btn" id="dtExp">Exportar NCR (JSON)</button><button class="btn" data-close>Fechar</button>'
@@ -5400,7 +6099,7 @@ const Hist = (() => {
         let txt;
         if(e.tipo === 'STATUS' || (e.tipo === 'MARCO' && e.cls !== 'INICIAL'))
           txt = '<span class="small">'+esc(e.de||'—')+'</span> <span class="arrowto">→</span> <b>'+esc(e.para||'—')+'</b>'
-              + (e.tipo === 'MARCO' ? ' <span class="small muted">· marco do export</span>' : '');
+              + (e.tipo === 'MARCO' ? ' <span class="small muted">· ' + (e.fonte === 'SISTEMA' ? 'histórico do sistema' : 'marco do export') + '</span>' : '');
         else if(e.tipo === 'INICIAL' || e.cls === 'INICIAL') txt = '<b>'+esc(e.para||'—')+'</b> <span class="muted small">abertura da NCR</span>';
         else txt = '<b>'+esc(e.campo||'')+'</b>: <span class="small">'+esc(Util.strVal(e.de).slice(0,60)||'(vazio)')+'</span> <span class="arrowto">→</span> <span class="small">'+esc(Util.strVal(e.para).slice(0,60)||'(vazio)')+'</span>';
         return `<tr><td class="small">${Util.fDateTime(e.data)}</td>
@@ -5437,6 +6136,7 @@ const Imp = (() => {
         <button class="btn" id="iMan">Selecionar arquivos manualmente</button>
         <div class="right muted small">${Util.fNum(imps.length)} importações registradas</div>
       </div>
+      ${cardSistema()}
       ${!imps.length ? semDados('Nenhuma importação registrada ainda.') : `
       <div class="tbl-wrap"><table class="tbl"><thead><tr>
         <th>Data/hora</th><th>Arquivo</th><th class="num">Analisadas</th><th class="num">Novas</th><th class="num">Atualizadas</th>
@@ -5457,6 +6157,107 @@ const Imp = (() => {
     $('#iUpd', host).onclick = () => UI.atualizarBanco();
     $('#iMan', host).onclick = () => UI.importarManual();
     $$('tr[data-i]', host).forEach(tr => tr.onclick = () => detalhe(imps[+tr.dataset.i]));
+    $('#sisImp', host).onclick = importarSistema;
+    $('#sisCopiar', host).onclick = copiarExtrator;
+    $('#sisBaixar', host).onclick = () => Util.download('extrator_historico_ncr.js', SistemaHist.script(), 'text/javascript;charset=utf-8');
+    $('#sisAjuda', host).onclick = ajudaExtrator;
+  }
+
+  /* ---------- histórico do sistema (NCR Integrada) ---------- */
+  function cardSistema(){
+    const r = SistemaHist.resumo();
+    const situacao = r.total
+      ? '<b>' + Util.fNum(r.noBanco) + '</b> de ' + Util.fNum(r.ncrs) + ' NCRs do banco com trajetória corrigida pelo sistema'
+        + (r.fora ? ' · <span title="capturadas, mas ainda não existem no banco; serão corrigidas quando um Excel trouxer essas NCRs">'
+        + Util.fNum(r.fora) + ' aguardando a NCR entrar no banco</span>' : '')
+        + ' · última captura ' + Util.fDateTime(r.ultima)
+      : 'Nenhum histórico do sistema importado ainda.';
+    return '<div style="margin-bottom:14px">' + card('Histórico do sistema (NCR Integrada)',
+      'datas exatas de cada mudança de estado, lidas da aba Histórico de cada NCR',
+      '<div class="small" style="margin-bottom:10px">' + situacao + '</div>'
+      + '<div class="hstack wrap" style="gap:8px">'
+      + '<button class="btn primary" id="sisImp">Importar histórico extraído (.json)</button>'
+      + '<button class="btn" id="sisCopiar" title="Copia o script para colar no Console (F12) do NCR Integrada">Copiar extrator</button>'
+      + '<button class="btn" id="sisBaixar">Baixar extrator (.js)</button>'
+      + '<button class="btn" id="sisAjuda">Como usar</button></div>') + '</div>';
+  }
+  async function copiarExtrator(){
+    const t = SistemaHist.script();
+    try{ await navigator.clipboard.writeText(t); Util.toast('Script copiado. Cole no Console (F12) do NCR Integrada.', 'ok', 'Extrator'); }
+    catch(e){
+      UI.modal({size:'md', title:'Copiar extrator', sub:'Selecione tudo (Ctrl+A) e copie (Ctrl+C)',
+        body:'<textarea class="mono small" style="width:100%;height:50vh" readonly>' + esc(t) + '</textarea>'});
+      const ta = $('#modalBody textarea'); ta.focus(); ta.select();
+    }
+  }
+  function ajudaExtrator(){
+    UI.modal({size:'md', title:'Extrator de histórico do NCR Integrada', sub:'Como capturar e importar',
+      body:`<ol class="small" style="padding-left:18px;line-height:1.7">
+        <li>Clique em <b>Copiar extrator</b> (ou <b>Baixar extrator</b> e abra o arquivo num editor para copiar o texto).</li>
+        <li>No Chrome/Edge, abra o <b>NCR Integrada</b> e faça login normalmente. Qualquer página do sistema serve.</li>
+        <li>Pressione <b>F12</b> → aba <b>Console</b>, cole o script e tecle <b>Enter</b>.
+            Se o navegador pedir, digite <code>allow pasting</code> (ou <code>permitir colar</code>) e cole de novo.</li>
+        <li>No painel que aparece no canto da página, cole a lista de links das NCRs
+            (<code>…/#/ncr/65f05c…/editar</code>, um por linha; IDs soltos também servem)
+            ou use <b>Pegar links desta página</b> numa tela de listagem.</li>
+        <li>Teste com 2 ou 3 links, clique em <b>Iniciar</b> e depois em <b>Baixar JSON</b>. Dando certo, cole a lista completa.</li>
+        <li>Mantenha a aba aberta até o fim. Se a sessão expirar ou a aba fechar, faça login, cole o script de novo e clique em
+            <b>Continuar</b>: o que já foi capturado fica salvo no navegador.</li>
+        <li>Aqui no NCR Control, clique em <b>Importar histórico extraído (.json)</b>.</li>
+      </ol>
+      <div class="note small" style="margin-top:10px">O extrator só lê as páginas que você já consegue abrir, com a sua sessão, e não
+      altera nada no NCR Integrada. O arquivo final fica no seu computador.<br><br>
+      Na importação, cada NCR tem a trajetória refeita com as datas exatas do sistema até o momento da captura. O que os Excel
+      registrarem depois continua sendo somado normalmente, e a correção é reaplicada automaticamente a cada nova importação.
+      Um backup é criado antes.</div>
+      <div class="small muted" style="margin-top:8px">Se aparecer o erro "o site não permite abrir a NCR num quadro interno",
+      troque o <b>Modo</b> para <b>Janela</b> e permita pop-ups para o site. Com <b>Em paralelo</b> em 2–3, cerca de 1.100 NCRs
+      levam em torno de 30–60 minutos, conforme a velocidade do sistema.</div>`});
+  }
+  function inputJson(){
+    return new Promise(res => {
+      const i = document.createElement('input');
+      i.type = 'file'; i.accept = '.json,application/json';
+      i.onchange = () => res(i.files && i.files[0]);
+      i.click();
+    });
+  }
+  async function importarSistema(){
+    const f = await inputJson();
+    if(!f) return;
+    if(Store.st.mode === 'none'){ UI.telaInicial(); return; }
+    if(!DB.contagem().ncrs && !(await UI.confirmar('Banco sem NCRs',
+      'O banco ainda não tem NCRs. O histórico será guardado e aplicado assim que um Excel trouxer essas NCRs. Continuar?', 'Importar')))
+      return;
+    UI.busy.show('Corrigindo histórico das NCRs...', f.name);
+    let r;
+    try{ r = await SistemaHist.importar(f); }
+    catch(e){ UI.busy.hide(); Util.toast(e.message, 'err', 'Histórico do sistema'); return; }
+    UI.busy.hide();
+    Filters.invalidateFacets();
+    UI.refresh();
+    const a = r.aplicacao;
+    const kv = (k,v) => '<div class="kv"><span>'+esc(k)+'</span><b>'+v+'</b></div>';
+    UI.modal({size:'md', title:'Histórico do sistema importado', sub:esc(f.name),
+      body:`<div class="grid g2"><div>${card('Arquivo','',
+          kv('NCRs no arquivo', Util.fNum(r.lidas))
+        + kv('Capturadas com sucesso', Util.fNum(r.capturadas))
+        + kv('Com erro na captura', r.errosExtracao ? '<span class="badge warn">'+Util.fNum(r.errosExtracao)+'</span>' : '0')
+        + kv('Novas / substituídas', Util.fNum(r.novas)+' / '+Util.fNum(r.atualizadas))
+        + kv('Ignoradas (já havia captura mais nova)', Util.fNum(r.maisAntigas))
+        + kv('Gerado em', Util.fDateTime(r.geradoEm))
+        + kv('Backup criado', r.backup ? '<span class="mono small">'+esc(r.backup)+'</span>' : '—'))}</div>
+        <div>${card('Correção','',
+          kv('NCRs corrigidas', Util.fNum(a.aplicadas))
+        + kv('Eventos do sistema gravados', Util.fNum(a.eventos))
+        + kv('Eventos anteriores substituídos', Util.fNum(a.removidos))
+        + kv('Status atual atualizado', Util.fNum(a.statusAtualizado))
+        + kv('Aguardando a NCR entrar no banco', Util.fNum(r.foraDoBanco.length))
+        + kv('Sem mudança de estado registrada', Util.fNum(a.semTransicao)))}</div></div>
+        ${r.errosExtracao ? '<div class="note small" style="margin-top:12px">'+Util.fNum(r.errosExtracao)+' NCR(s) falharam na captura. '
+          + 'Rode o extrator de novo e clique em <b>Continuar</b>: ele tenta de novo só as que faltam.</div>' : ''}
+        ${r.foraDoBanco.length ? '<div style="margin-top:12px"><b class="small">NCRs capturadas que ainda não existem no banco</b>'
+          + '<pre class="log">'+esc(r.foraDoBanco.slice(0,200).join('\n') + (r.foraDoBanco.length > 200 ? '\n… e mais '+(r.foraDoBanco.length-200) : ''))+'</pre></div>' : ''}`});
   }
   function detalhe(s){
     const kv = (k,v) => '<div class="kv"><span>'+esc(k)+'</span><b>'+v+'</b></div>';
@@ -5975,6 +6776,7 @@ const Conf = (() => {
       n.ordem = Flow.ordemDe(n.status);
       n.fechada = Flow.isFinal(n.status);
     }
+    SistemaHist.reaplicar();
   }
   return {render};
 })();

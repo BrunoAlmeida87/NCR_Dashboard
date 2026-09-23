@@ -29,6 +29,7 @@ O sistema cria e mantém:
 │   ├── ncr.json                   estado atual de cada NCR
 │   ├── produtos.json              vínculos NCR × produto
 │   ├── historico.json             eventos de alteração (avanços, retornos, laterais…)
+│   ├── historico_sistema.json     histórico capturado da aba Histórico do NCR Integrada
 │   ├── arquivos_processados.json  hash SHA-256 de cada Excel já lido
 │   ├── importacoes.json           log de cada atualização
 │   ├── configuracao.json          fluxo, aging, preferências
@@ -58,6 +59,20 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
     marcada como **estimada**; esse intervalo sem informação fica fora das médias por etapa.
   - A lista de colunas reconhecidas fica visível em **Configurações → Fluxo e status**, onde a
     reconstrução também pode ser desligada.
+- **Histórico exato do NCR Integrada** (tela *Importações → Histórico do sistema*): a aba
+  *Histórico* de cada NCR no sistema traz cada mudança de estado com data, hora e usuário.
+  1. **Copiar extrator** e colar no Console (F12) de uma página do NCR Integrada, já logado.
+  2. No painel que aparece, colar a lista de links (`…/#/ncr/<id>/editar`) ou usar
+     *Pegar links desta página*; **Iniciar**. O extrator abre cada NCR num quadro invisível
+     do próprio site (mesma sessão, só leitura), lê o histórico e guarda o progresso no
+     navegador — dá para pausar e continuar. Ao fim, **Baixar JSON** (há também CSV).
+  3. **Importar histórico extraído (.json)** no NCR Control.
+
+  Na importação, a trajetória de cada NCR até a data da captura é **substituída** pelas
+  transições reais do sistema (as datas estimadas e as mudanças vistas entre duas fotos
+  saem); o que os Excel registrarem depois continua valendo. Visitas, contadores, "status
+  desde" e última movimentação são recalculados, e a correção é reaplicada a cada nova
+  importação — NCRs que só entrarem no banco depois já chegam corrigidas. Backup antes.
 - **Data da "foto" deduzida do conteúdo**: quando o export traz o tempo de tramitação, a data da
   exportação é calculada a partir de *data de criação + dias de tramitação* (mediana das linhas),
   em vez da data do arquivo — que muda ao copiar ou baixar novamente. O tempo no status atual vem
