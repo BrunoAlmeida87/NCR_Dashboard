@@ -97,7 +97,7 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
   - A coluna de cada recorte é achada pelo **cabeçalho**; quando o export usa outro nome, ela é
     apontada à mão em **Configurações → Dimensões**. Recorte sem coluna correspondente
     simplesmente não aparece — e volta sozinho quando um Excel com essa coluna for importado.
-  - `SBR` é **normalizado**: `SBR 2`, `sbr-02` e `2` caem no mesmo grupo; `SBR1`–`SBR4` ficam
+  - `SBR` é **normalizado**: `53 d`, `53-D` e `53D` caem no mesmo grupo; `53A`–`53D` ficam
     sempre na lista, mesmo zerados, e `SBRall` aparece quando o export marca alguma NCR como
     comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
   - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
@@ -109,9 +109,11 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
   - **Galeria**: uma miniatura por NCR, com o caminho percorrido no tempo (etapa no eixo
     vertical, passos no horizontal), colorida por tipo de movimento. Agrupa por sistema, SBR,
     etapa ou status.
-  - **Reprodução**: o relógio corre sobre as datas reais do export e cada NCR é um ponto que
-    anda entre as etapas, com contagem por etapa e destaque para quem se mexeu nos últimos
-    15 dias.
+  - **Reprodução**: o relógio corre sobre as datas reais (de 1 dia/s a 1 ano/s) e cada NCR é
+    um ponto que anda entre as colunas, com contagem por coluna e destaque para quem se mexeu
+    nos últimos 15 dias. As colunas podem ser as etapas do fluxo (agrupadas) ou cada etapa
+    da NCR (status); por padrão entram todas as NCRs do recorte, ou as N primeiras por uma
+    prioridade escolhida.
 - **Módulos**: Dashboard, NCRs, Produtos, Aging, Análise de Fluxo, Fluxos das NCRs, Histórico,
   Importações, Arquivos e Configurações.
 - **Gravação segura**: backup automático antes de cada importação, escrita em duas etapas

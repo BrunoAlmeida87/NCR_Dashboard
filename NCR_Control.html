@@ -247,6 +247,10 @@ table.tbl .ncrid{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink
 .tl-item.t-CAMPO::before{background:var(--axis);width:8px;height:8px;top:5px;left:-21px}
 .tl-date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .tl-main{font-size:13px;margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* texto longo no detalhe da NCR: abre por inteiro com um clique */
+.xp-t{font-size:11.5px;margin-left:4px;white-space:nowrap}
+#modalBody table.tbl td.corta{cursor:zoom-in}
+#modalBody table.tbl td.td-aberta{white-space:pre-wrap;overflow:visible;max-width:none;min-width:220px;word-break:break-word;cursor:zoom-out}
 .tl-detail{font-size:12px;color:var(--text-2);margin-top:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 10px}
 .arrowto{color:var(--muted);margin:0 2px}
 
@@ -1837,8 +1841,8 @@ const Cfg = (() => {
        aponta a coluna a mao em Configuracoes -> Dimensoes. */
     dimensoes: [
       {id:'sbr', rot:'SBR', alias:['sbr'], normalizar:'sbr', multi:false,
-       fixos:['SBR1','SBR2','SBR3','SBR4'],
-       ajuda:'Valores como "SBR 2", "sbr-02" e "2" caem no mesmo grupo. "SBRall" aparece quando o export traz alguma NCR marcada como comum a todos.'},
+       fixos:['53A','53B','53C','53D'],
+       ajuda:'Os cascos 53A, 53B, 53C e 53D ficam sempre na lista; grafias como "53 d" e "53-D" caem no mesmo grupo. "SBRall" aparece quando o export traz alguma NCR marcada como comum a todos.'},
       {id:'sby', rot:'SBY', alias:['sby'], normalizar:null, multi:false,
        ajuda:'Nenhum dos exports lidos ate agora traz uma coluna SBY. Aponte a coluna correta aqui quando ela existir.'},
       {id:'sistema', rot:'Sistemas (bigramas)', alias:['bigramas','bigrama','sistema','sistemas','system','systems'],
@@ -2333,6 +2337,13 @@ const DB = (() => {
       d.config = Object.assign(Cfg.base(), res.configuracao);
       if(!Array.isArray(d.config.fluxo) || !d.config.fluxo.length) d.config.fluxo = Cfg.FLUXO_PADRAO.slice();
       if(!d.config.etapas) d.config.etapas = Cfg.ETAPAS;
+      /* recortes de SBR: SBR1..SBR4 deram lugar aos cascos 53A..53D */
+      (d.config.dimensoes || []).forEach(dm => {
+        if(dm && dm.id === 'sbr' && JSON.stringify(dm.fixos || []) === JSON.stringify(['SBR1','SBR2','SBR3','SBR4'])){
+          const pad = Cfg.PADRAO.dimensoes.find(x => x.id === 'sbr');
+          dm.fixos = pad.fixos.slice(); dm.ajuda = pad.ajuda;
+        }
+      });
     }
     d.ncrs = (res.ncr && res.ncr.registros) || {};
     d.produtos = (res.produtos && res.produtos.registros) || {};
@@ -4053,6 +4064,8 @@ const Dim = (() => {
     const n = Util.norm(v);
     if(!n) return null;
     if(/\b(all|todos|todas|geral|comum|common)\b/.test(n)) return 'SBRall';
+    let c = /\b53\s*-?\s*([a-z])\b/.exec(n) || /\b53([a-z])\b/.exec(n);
+    if(c) return '53' + c[1].toUpperCase();
     let m = /\bsbr\s*-?\s*0*(\d{1,2})\b/.exec(n);
     if(!m) m = /^0*(\d{1,2})$/.exec(n);
     return m ? 'SBR' + (+m[1]) : null;
@@ -4093,7 +4106,7 @@ const Dim = (() => {
         .filter(([v]) => fixos.indexOf(v) < 0)
         .map(([v,n]) => ({v, n, fixo:false}))
         .sort((a,b) => b.n - a.n || Util.cmp(a.v, b.v));
-      /* SBR1..SBR4 ficam sempre na lista, mesmo zerados: o recorte existe
+      /* 53A..53D ficam sempre na lista, mesmo zerados: o recorte existe
          ainda que este export nao traga nenhuma NCR deles, e esconder a
          opcao faria parecer que o filtro esta quebrado */
       const valores = fixos.map(f => ({v:f, n:cont.get(f) || 0, fixo:true})).concat(encontrados);
@@ -4775,6 +4788,16 @@ const UI = (() => {
 })();
 
 /* ============================ helpers de layout ============================ */
+/* rotulo de SVG em caixa fixa: comprime o texto ate caber em vez de corta-lo;
+   so corta (com o nome inteiro no <title>) o que nem comprimido caberia */
+function rotuloSVG(txt, largura, fonte){
+  const t = String(txt == null ? '' : txt);
+  const cabe = Math.floor(largura / (fonte * 0.56) * 1.45);
+  const label = t.length > cabe ? t.slice(0, cabe - 1) + '…' : t;
+  const aperta = label.length * fonte * 0.56 > largura
+    ? ` textLength="${Math.round(largura)}" lengthAdjust="spacingAndGlyphs"` : '';
+  return {label, aperta};
+}
 function card(titulo, hint, corpoHtml, acoes){
   return `<div class="card"><div class="card-h"><h3>${esc(titulo)}</h3>${hint?'<span class="hint">'+esc(hint)+'</span>':''}
     ${acoes?'<div class="right">'+acoes+'</div>':''}</div><div class="card-b">${corpoHtml}</div></div>`;
@@ -5232,8 +5255,8 @@ const Detalhe = (() => {
     colunas.forEach((c,i) => {
       const x = colX(i);
       g += `<rect x="${x}" y="12" width="${NW}" height="22" rx="6" style="fill:var(--surface-3)"/>`;
-      const t = c.titulo.length > 22 ? c.titulo.slice(0,21)+'…' : c.titulo;
-      g += `<text x="${x+NW/2}" y="27" text-anchor="middle" style="fill:var(--text-2);font-size:10.5px;font-weight:600">${esc(t)}</text>`;
+      const r = rotuloSVG(c.titulo, NW - 12, 10.5);
+      g += `<text x="${x+NW/2}" y="27" text-anchor="middle"${r.aperta} style="fill:var(--text-2);font-size:10.5px;font-weight:600"><title>${esc(c.titulo)}</title>${esc(r.label)}</text>`;
     });
     g += `<text x="12" y="27" style="fill:var(--muted);font-size:10px;font-weight:600">PASSO</text>`;
     /* ligacoes: sempre de uma linha para a seguinte */
@@ -5285,7 +5308,7 @@ const Detalhe = (() => {
       const desc = descobertos.has(s.status);
       const fill = ehAtual ? (rec.fechada ? 'rgba(12,163,12,.16)' : 'var(--accent-wash)') : 'var(--surface-3)';
       const stroke = ehAtual ? (rec.fechada ? 'var(--good)' : 'var(--accent)') : cor;
-      const label = String(s.status).length > 21 ? String(s.status).slice(0,20)+'…' : String(s.status);
+      const rl = rotuloSVG(s.status, NW - (n > 1 ? 40 : 18), 11), label = rl.label;
       const v = vis[s.status];
       g += `<g><title>${esc(s.status)} — passo ${i+1} de ${seq.length}, ${Util.fDateTime(s.data)}`
          + `${n > 1 ? '\n'+n+'ª passagem por esta etapa' : ''}`
@@ -5294,7 +5317,7 @@ const Detalhe = (() => {
          + `${s.obs ? '\n'+esc(s.obs) : ''}</title>`;
       g += `<rect class="no" x="${x}" y="${y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}"`
          + ` stroke-width="${ehAtual ? 2 : 1.4}"${desc ? ' stroke-dasharray="4 3"' : ''}/>`;
-      g += `<text x="${x+10}" y="${y+NH/2+4}" style="fill:var(--text);font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
+      g += `<text x="${x+10}" y="${y+NH/2+4}"${rl.aperta} style="fill:var(--text);font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
       if(n > 1)
         g += `<circle cx="${x+NW-14}" cy="${y+NH/2}" r="9" style="fill:var(--s4)"/>`
            + `<text x="${x+NW-14}" y="${y+NH/2+3.5}" text-anchor="middle" style="fill:#fff;font-size:9px;font-weight:700">${n}ª</text>`;
@@ -5350,8 +5373,8 @@ const Detalhe = (() => {
     colunas.forEach((c,i) => {
       const x = PX + i*(NW+HG);
       g += `<rect x="${x}" y="14" width="${NW}" height="22" rx="6" style="fill:var(--surface-3)"/>`;
-      const t = c.titulo.length > 26 ? c.titulo.slice(0,25)+'…' : c.titulo;
-      g += `<text x="${x+NW/2}" y="29" text-anchor="middle" style="fill:var(--text-2);font-size:10.5px;font-weight:600">${esc(t)}</text>`;
+      const r = rotuloSVG(c.titulo, NW - 12, 10.5);
+      g += `<text x="${x+NW/2}" y="29" text-anchor="middle"${r.aperta} style="fill:var(--text-2);font-size:10.5px;font-weight:600"><title>${esc(c.titulo)}</title>${esc(r.label)}</text>`;
     });
     colunas.forEach(c => c.status.forEach(s => {
       const p = pos.get(s), v = vis[s];
@@ -5359,14 +5382,14 @@ const Detalhe = (() => {
       const fill = ehAtual ? (rec.fechada ? 'rgba(12,163,12,.16)' : 'var(--accent-wash)') : visitado ? 'var(--surface-3)' : 'var(--surface)';
       const stroke = ehAtual ? (rec.fechada ? 'var(--good)' : 'var(--accent)') : visitado ? 'var(--axis)' : 'var(--grid)';
       const ink = visitado || ehAtual ? 'var(--text)' : 'var(--muted)';
-      const label = s.length > 23 ? s.slice(0,22)+'…' : s;
+      const rl = rotuloSVG(s, NW - (visitado && v.n > 1 ? 38 : 18), 11), label = rl.label;
       const dias = v && v.ms ? Math.round(v.ms/Util.DAY) : 0;
       const desc = descobertos.has(s);
       g += `<g><title>${esc(s)}${visitado ? ' — '+v.n+' passagem(ns)'+(dias?', '+dias+' dia(s) acumulados':', tempo não informado pelo export') : ' — não percorrido'}`
          + `${desc ? ' · etapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}</title>`;
       g += `<rect class="no" x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${ehAtual?2:1}"${desc?' stroke-dasharray="4 3"':''}/>`;
       if(ehAtual) g += `<rect x="${p.x}" y="${p.y+4}" width="3" height="${NH-8}" rx="2" style="fill:${rec.fechada?'var(--good)':'var(--accent)'}"/>`;
-      g += `<text x="${p.x+10}" y="${p.y+NH/2+4}" style="fill:${ink};font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
+      g += `<text x="${p.x+10}" y="${p.y+NH/2+4}"${rl.aperta} style="fill:${ink};font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
       if(visitado && v.n > 1)
         g += `<circle cx="${p.x+NW-13}" cy="${p.y+NH/2}" r="9" style="fill:var(--s4)"/><text x="${p.x+NW-13}" y="${p.y+NH/2+3.5}" text-anchor="middle" style="fill:#fff;font-size:9.5px;font-weight:700">${v.n}×</text>`;
       else if(dias > 0)
@@ -5459,7 +5482,7 @@ const Detalhe = (() => {
         main = '<b>'+esc(e.campo)+'</b> <span class="mv mv-CAMPO">✎ Alteração de campo</span>';
       }
       const det = (e.tipo === 'CAMPO' || (e.tipo === 'PRODUTO' && e.de && e.para))
-        ? '<div class="tl-detail"><span class="muted">de:</span> '+esc(corta(e.de,180))+'<br><span class="muted">para:</span> '+esc(corta(e.para,180))+'</div>'
+        ? '<div class="tl-detail"><span class="muted">de:</span> '+expansivel(e.de,180)+'<br><span class="muted">para:</span> '+expansivel(e.para,180)+'</div>'
         : ((e.obs && e.tipo !== 'INICIAL' && e.obs !== 'Estado inicial conhecido') ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
           + (e.tipo === 'PRODUTO' ? '<div class="small muted">'+esc(Util.strVal(e.para||e.de))+'</div>' : '');
       return `<div class="tl-item t-${esc(cls)}">
@@ -5467,7 +5490,40 @@ const Detalhe = (() => {
         <div class="tl-main">${main}</div>${det}</div>`;
     }).join('') + '</div>';
   }
-  const corta = (s,n) => { s = Util.strVal(s); return s.length > n ? s.slice(0,n)+'…' : (s||'(vazio)'); };
+  /* mostra o comeco e um "ver tudo" que abre o texto inteiro no lugar */
+  function expansivel(v, n){
+    const t = Util.strVal(v);
+    if(!t) return '(vazio)';
+    if(t.length <= n) return esc(t);
+    return '<span class="xp"><span class="xp-c">' + esc(t.slice(0, n)) + '…</span>'
+         + '<span class="xp-f" hidden style="white-space:pre-wrap">' + esc(t) + '</span>'
+         + '<a href="#" class="xp-t">ver tudo</a></span>';
+  }
+  /* celulas cortadas nas tabelas do detalhe: um clique abre, outro fecha */
+  function ligarExpansao(host){
+    if(host.__xp) return;          /* o corpo do modal e reaproveitado: liga uma vez so */
+    host.__xp = true;
+    host.addEventListener('click', ev => {
+      const a = ev.target.closest('.xp-t');
+      if(a){
+        ev.preventDefault();
+        const box = a.closest('.xp'), aberto = !box.querySelector('.xp-f').hidden;
+        box.querySelector('.xp-f').hidden = aberto;
+        box.querySelector('.xp-c').hidden = !aberto;
+        a.textContent = aberto ? 'ver tudo' : 'recolher';
+        return;
+      }
+      const td = ev.target.closest('table.tbl td');
+      if(!td || ev.target.closest('a,button')) return;
+      if(td.classList.contains('td-aberta')){ td.classList.remove('td-aberta'); return; }
+      if(td.scrollWidth > td.clientWidth + 1){ td.classList.add('td-aberta'); td.classList.remove('corta'); }
+    });
+    host.addEventListener('mouseover', ev => {
+      const td = ev.target.closest('table.tbl td');
+      if(!td || td.classList.contains('td-aberta')) return;
+      if(td.scrollWidth > td.clientWidth + 1){ td.classList.add('corta'); if(!td.title) td.title = 'Clique para ver o texto completo'; }
+    });
+  }
 
   function abrir(key){
     const rec = DB.all().ncrs[key];
@@ -5553,6 +5609,7 @@ const Detalhe = (() => {
       $$('#modalBody [data-fx]').forEach(b => b.classList.toggle('primary', b.dataset.fx === modoFluxo));
     }
     desenharFluxo();
+    ligarExpansao($('#modalBody'));
     $$('#modalBody [data-fx]').forEach(b => b.onclick = () => { modoFluxo = b.dataset.fx; desenharFluxo(); });
     $$('#modalBody .tab').forEach(t => t.onclick = () => {
       $$('#modalBody .tab').forEach(x => x.classList.remove('active'));
@@ -5890,10 +5947,11 @@ const FluxoView = (() => {
    mostra as NCRs andando pelas etapas no tempo real do export.            */
 const Trilhas = (() => {
   const st = {modo:'galeria', ordem:'mov', grupo:'nenhum', limite:60,
-              t:null, tocando:false, vel:30, raf:null};
-  /* um desenho por NCR custa DOM: o teto e explicito na tela em vez de um
-     "todas" que trava o navegador num banco de 20 mil NCRs */
-  const TETO_REPRO = 800;
+              t:null, tocando:false, vel:30, raf:null,
+              qtdRepro:0,            /* 0 = todas as NCRs do recorte */
+              colRepro:'etapa'};     /* colunas da reproducao: 'etapa' do fluxo ou cada 'status' */
+  /* um circulo por NCR custa DOM: acima disso a tela avisa que pode pesar */
+  const PESADO_REPRO = 3000;
 
   /* ---------- modelo de colunas (uma por etapa do fluxo) ---------- */
   function modelo(){
@@ -5903,7 +5961,28 @@ const Trilhas = (() => {
     cols.push({ordem:null, titulo:'Fora do fluxo'});
     const idx = new Map();
     cols.forEach((c,i) => { if(c.ordem != null) idx.set(c.ordem, i); });
-    return {cols, idx, fora: cols.length - 1};
+    const m = {cols, idx, fora: cols.length - 1, tipo:'etapa'};
+    m.colDe = status => colDe(status, m);
+    return m;
+  }
+  /* uma coluna por status (etapa da NCR), so os que aparecem nas trajetorias
+     do recorte, na ordem do fluxo configurado; status fora da lista entram
+     pela ordem inferida do codigo ("7.2 - TA") */
+  function modeloStatus(list){
+    const cfgPos = new Map();
+    (DB.cfg().fluxo || []).forEach((f, i) => { const k = Util.norm(f.status); if(!cfgPos.has(k)) cfgPos.set(k, i); });
+    const usados = new Map();
+    list.forEach(rec => Detalhe.sequencia(rec).forEach(e => {
+      if(!e.status) return;
+      const k = Util.norm(e.status);
+      if(!usados.has(k)) usados.set(k, {st:e.status, o:Flow.ordemInferida(e.status), pos: cfgPos.has(k) ? cfgPos.get(k) : 9999});
+    }));
+    const lista = Array.from(usados.entries()).sort((a, b) =>
+      ((a[1].o == null ? 999 : a[1].o) - (b[1].o == null ? 999 : b[1].o)) || (a[1].pos - b[1].pos) || Util.cmp(a[1].st, b[1].st));
+    const pos = new Map();
+    const cols = lista.map(([k, v], i) => { pos.set(k, i); return {ordem:v.o, titulo:v.st}; });
+    if(!cols.length) cols.push({ordem:null, titulo:'—'});
+    return {cols, idx:new Map(), fora:0, tipo:'status', colDe: status => { const i = pos.get(Util.norm(status || '')); return i == null ? 0 : i; }};
   }
   function colDe(status, m){
     const o = Flow.ordemInferida(status);
@@ -5916,7 +5995,7 @@ const Trilhas = (() => {
       if(!e.data || !e.status) return;
       const t = new Date(e.data).getTime();
       if(isNaN(t)) return;
-      pts.push({t, data:e.data, st:e.status, cls:e.cls || 'INDEFINIDA', c:colDe(e.status, m), estimado:!!e.estimado});
+      pts.push({t, data:e.data, st:e.status, cls:e.cls || 'INDEFINIDA', c:m.colDe(e.status), estimado:!!e.estimado});
     });
     pts.sort((a,b) => a.t - b.t);
     return pts;
@@ -6035,14 +6114,19 @@ const Trilhas = (() => {
 
   /* ---------- reproducao: o relogio corre e as NCRs andam ---------- */
   function reproducao(host, todas, m){
-    const excedente = Math.max(0, todas.length - TETO_REPRO);
+    const teto = st.qtdRepro || Infinity;
+    const excedente = Math.max(0, todas.length - teto);
     const ord = ORDENS[st.ordem] || ORDENS.mov;
-    const trilhas = excedente ? todas.slice().sort(ord.fn).slice(0, TETO_REPRO) : todas;
+    const trilhas = excedente ? todas.slice().sort(ord.fn).slice(0, teto) : todas;
     const t0 = Math.min.apply(null, trilhas.map(t => t.pts[0].t));
     const t1 = Math.max.apply(null, trilhas.map(t => t.pts[t.pts.length-1].t));
     if(st.t == null || st.t < t0 || st.t > t1) st.t = t0;
     const N = trilhas.length;
-    const COLW = 138, GAP = 10, PADT = 50, PADX = 8;
+    /* por status sao muitas colunas: mais estreitas, cabecalho em duas linhas
+       (nome e contagem) e rolagem horizontal em vez de encolher o desenho */
+    const porStatus = m.tipo === 'status';
+    const COLW = porStatus ? 96 : 138, GAP = porStatus ? 6 : 10, PADT = porStatus ? 64 : 50, PADX = 8;
+    const HH = porStatus ? 38 : 24;
     const R = N > 400 ? 2.6 : N > 150 ? 3.4 : 4.4;
     const DX = R*2 + 3, DY = R*2 + 3;
     const perRow = Math.max(1, Math.floor((COLW - 16) / DX));
@@ -6072,17 +6156,20 @@ const Trilhas = (() => {
         <button class="btn sm primary" id="repPlay">${st.tocando ? '❚❚ Pausar' : '▶ Reproduzir'}</button>
         <button class="btn sm" id="repBack" title="Voltar ao início">⏮</button>
         <input type="range" id="repSlider" min="0" max="1000" value="0" style="flex:1;min-width:180px">
-        <select id="repVel" class="sm">
-          ${[[7,'7 dias/s'],[30,'30 dias/s'],[90,'90 dias/s'],[365,'1 ano/s']].map(([v,l]) =>
+        <select id="repVel" class="sm" title="Quantos dias do calendário passam a cada segundo">
+          ${[[1,'1 dia/s'],[3,'3 dias/s'],[7,'7 dias/s'],[30,'30 dias/s'],[90,'90 dias/s'],[365,'1 ano/s']].map(([v,l]) =>
             `<option value="${v}"${st.vel===v?' selected':''}>${l}</option>`).join('')}
         </select>
         <b id="repData" class="mono"></b>
       </div>
-      <div class="rep-wrap"><svg id="repSvg" viewBox="0 0 ${W} ${H}" width="100%"
-        preserveAspectRatio="xMinYMin meet" style="max-width:${W}px;height:auto;display:block"></svg></div>
-      ${excedente ? '<div class="note warn small" style="margin-top:10px">Reproduzindo ' + Util.fNum(TETO_REPRO)
+      <div class="rep-wrap"><svg id="repSvg" viewBox="0 0 ${W} ${H}"
+        ${porStatus ? `width="${W}" height="${H}" style="display:block;max-width:none"`
+                    : `width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:${W}px;height:auto;display:block"`}></svg></div>
+      ${excedente ? '<div class="note warn small" style="margin-top:10px">Reproduzindo ' + Util.fNum(teto)
         + ' de ' + Util.fNum(todas.length) + ' NCRs do recorte, escolhidas por <b>' + esc(ord.lbl.toLowerCase())
-        + '</b>. Aperte o filtro para ver o conjunto inteiro.</div>' : ''}
+        + '</b>. Em <b>NCRs</b>, escolha <b>Todas</b> para ver o conjunto inteiro.</div>' : ''}
+      ${!excedente && N > PESADO_REPRO ? '<div class="note warn small" style="margin-top:10px">' + Util.fNum(N)
+        + ' NCRs na reprodução: a animação pode ficar lenta. Filtre o recorte se precisar.</div>' : ''}
       ${Detalhe.legendaFluxo()}
       <div class="small muted" style="margin-top:10px">Cada ponto é uma NCR, na etapa em que ela estava naquela data.
         A cor é a do movimento que a trouxe até ali.
@@ -6096,13 +6183,23 @@ const Trilhas = (() => {
     /* colunas */
     m.cols.forEach((c,i) => {
       const x = PADX + i*(COLW+GAP);
-      svg.appendChild(mk('rect', {x, y:14, width:COLW, height:24, rx:6, style:'fill:var(--surface-3)'}));
-      const t = c.titulo.length > 16 ? c.titulo.slice(0,15)+'…' : c.titulo;
-      const tx = mk('text', {x:x+10, y:29, style:'fill:var(--text-2);font-size:10px;font-weight:600'});
-      tx.textContent = t;
-      svg.appendChild(tx);
+      const cab = mk('g', {});
+      const ttl = mk('title', {}); ttl.textContent = c.titulo; cab.appendChild(ttl);
+      cab.appendChild(mk('rect', {x, y:14, width:COLW, height:HH, rx:6, style:'fill:var(--surface-3)'}));
+      const tx = mk('text', {x:x+(porStatus ? 6 : 10), y:29, style:'fill:var(--text-2);font-size:' + (porStatus ? 9.5 : 10) + 'px;font-weight:600'});
+      /* o nome inteiro, comprimido se preciso; so corta o que nao caberia nem assim */
+      const disp = COLW - (porStatus ? 12 : 44);
+      const fs = porStatus ? 9.5 : 10;
+      const cabe = Math.floor(disp / (fs * 0.56) * 1.45);
+      const nome = c.titulo.length > cabe ? c.titulo.slice(0, cabe - 1) + '…' : c.titulo;
+      tx.textContent = nome;
+      if(nome.length * fs * 0.56 > disp){ tx.setAttribute('textLength', disp); tx.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+      cab.appendChild(tx);
+      svg.appendChild(cab);
       /* a contagem fica no cabecalho, encostada nos pontos que ela conta */
-      const cnt = mk('text', {x:x+COLW-10, y:29, 'text-anchor':'end', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i});
+      const cnt = mk('text', porStatus
+        ? {x:x+COLW/2, y:44, 'text-anchor':'middle', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i}
+        : {x:x+COLW-10, y:29, 'text-anchor':'end', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i});
       cnt.textContent = '0';
       svg.appendChild(cnt);
       svg.appendChild(mk('path', {d:`M${x},${PADT-8} H${x+COLW}`, style:'stroke:var(--grid)', 'stroke-width':1}));
@@ -6181,7 +6278,7 @@ const Trilhas = (() => {
     if(!DB.contagem().ncrs){ host.innerHTML = semDados('Importe um Excel para ver as trajetórias'); return; }
     UI.barraFiltros(host, {maxFacetas:3});
     const list = Filters.aplicar();
-    const m = modelo();
+    const m = st.modo === 'reproducao' && st.colRepro === 'status' ? modeloStatus(list) : modelo();
     const trilhas = montar(list, m);
     const grupos = [['nenhum','Sem agrupamento']]
       .concat(Dim.disponiveis().map(d => [d.id, d.rot]))
@@ -6199,9 +6296,17 @@ const Trilhas = (() => {
       ${galeriaAtiva ? `<div class="f"><label class="fld">Agrupar por</label><select id="trGrupo">
         ${grupos.map(([v,l]) => `<option value="${esc(v)}"${st.grupo===v?' selected':''}>${esc(l)}</option>`).join('')}
       </select></div>` : ''}
-      <div class="f"><label class="fld">${galeriaAtiva ? 'Ordenar por' : 'Prioridade na seleção'}</label><select id="trOrd">
-        ${Object.keys(ORDENS).map(k => `<option value="${k}"${st.ordem===k?' selected':''}>${esc(ORDENS[k].lbl)}</option>`).join('')}
+      ${!galeriaAtiva ? `<div class="f"><label class="fld">Colunas</label><select id="trCol">
+        <option value="etapa"${st.colRepro==='etapa'?' selected':''}>Etapa do fluxo (agrupada)</option>
+        <option value="status"${st.colRepro==='status'?' selected':''}>Etapa da NCR (cada status)</option>
       </select></div>
+      <div class="f"><label class="fld">NCRs</label><select id="trQtd">
+        ${[[0,'Todas'],[200,'200'],[400,'400'],[800,'800']].map(([v,l]) =>
+          `<option value="${v}"${st.qtdRepro===v?' selected':''}>${l}</option>`).join('')}
+      </select></div>` : ''}
+      ${galeriaAtiva || st.qtdRepro ? `<div class="f"><label class="fld">${galeriaAtiva ? 'Ordenar por' : 'Prioridade na seleção'}</label><select id="trOrd">
+        ${Object.keys(ORDENS).map(k => `<option value="${k}"${st.ordem===k?' selected':''}>${esc(ORDENS[k].lbl)}</option>`).join('')}
+      </select></div>` : ''}
       ${galeriaAtiva ? `<div class="f"><label class="fld">Mostrar</label><select id="trLim">
         ${[[24,'24 NCRs'],[60,'60 NCRs'],[150,'150 NCRs'],[400,'400 NCRs'],[1000,'1000 NCRs']].map(([v,l]) =>
           `<option value="${v}"${st.limite===v?' selected':''}>${l}</option>`).join('')}
@@ -6211,7 +6316,9 @@ const Trilhas = (() => {
     $$('[data-modo]', bar).forEach(b => b.onclick = () => { st.modo = b.dataset.modo; st.tocando = false; UI.render('fluxos'); });
     if($('#trGrupo', bar)) $('#trGrupo', bar).onchange = e => { st.grupo = e.target.value; UI.render('fluxos'); };
     if($('#trLim', bar))   $('#trLim', bar).onchange   = e => { st.limite = +e.target.value; UI.render('fluxos'); };
-    $('#trOrd', bar).onchange = e => { st.ordem = e.target.value; UI.render('fluxos'); };
+    if($('#trOrd', bar))   $('#trOrd', bar).onchange   = e => { st.ordem = e.target.value; UI.render('fluxos'); };
+    if($('#trQtd', bar))   $('#trQtd', bar).onchange   = e => { st.qtdRepro = +e.target.value; UI.render('fluxos'); };
+    if($('#trCol', bar))   $('#trCol', bar).onchange   = e => { st.colRepro = e.target.value; UI.render('fluxos'); };
 
     if(!trilhas.length){ host.appendChild(Object.assign(document.createElement('div'), {innerHTML: semDados('Nenhuma NCR com trajetória registrada no recorte atual')})); return; }
     if(st.modo === 'galeria') galeria(host, trilhas, m);
