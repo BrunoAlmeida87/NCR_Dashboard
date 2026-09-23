@@ -1046,12 +1046,35 @@ if(isWorker){
       if(req) req.onsuccess = () => { out = req.result; };
       t.oncomplete = () => res(out);
       t.onerror = () => rej(t.error);
+      /* disco cheio / cota estourada chegam como abort, nao como error */
+      t.onabort = () => rej(t.error || new Error('gravação cancelada pelo navegador'));
     });
   }
-  const salvar = rec => tx('ncrs', 'readwrite', s => s.put(rec));
+  /* Gravar o progresso nunca pode derrubar a captura: se o armazenamento do
+     navegador falhar ("UnknownError: Internal error", disco cheio...), tenta
+     de novo reabrindo o banco e, persistindo o erro, segue so na memoria —
+     o "Baixar JSON" continua funcionando enquanto a aba estiver aberta. */
+  let avisoGravacao = false;
+  async function gravarSeguro(store, fn){
+    for(let tent = 0; tent < 2; tent++){
+      try{ return await tx(store, 'readwrite', fn); }
+      catch(e){
+        if(tent === 0){ try{ (await dbp).close(); }catch(x){} dbp = null; await new Promise(r => setTimeout(r, 300)); continue; }
+        st.semGravacao = true;
+        if(!avisoGravacao){
+          avisoGravacao = true;
+          log('⚠ O navegador não conseguiu salvar o progresso (' + ((e && e.name) || '') + ': ' + ((e && e.message) || e)
+            + '). A captura continua, mas só na memória: NÃO feche esta aba e clique em "Baixar JSON" ao terminar. '
+            + 'Causa comum: pouco espaço livre no disco C:.', 'err');
+        }
+        return undefined;
+      }
+    }
+  }
+  const salvar = rec => gravarSeguro('ncrs', s => s.put(rec));
   const todos = () => tx('ncrs', 'readonly', s => s.getAll());
   const metaGet = k => tx('meta', 'readonly', s => s.get(k));
-  const metaSet = (k, v) => tx('meta', 'readwrite', s => s.put(v, k));
+  const metaSet = (k, v) => gravarSeguro('meta', s => s.put(v, k));
   const limparTudo = async () => { await tx('ncrs', 'readwrite', s => s.clear()); await tx('meta', 'readwrite', s => s.clear()); };
 
   /* ---------------- leitura da página de uma NCR ---------------- */
@@ -1262,6 +1285,7 @@ if(isWorker){
       try{ q = novoQuadro(k); quadros.push(q); }
       catch(e){ log(e.message, 'err'); st.parar = true; return; }
       while(!st.parar && i < pend.length){
+       try{
         const id = pend[i++];
         const ant = st.dados.get(id);
         const t = Date.now();
@@ -1287,18 +1311,20 @@ if(isWorker){
           if(e.login || /quadro interno|bloqueou/.test(e.message)){ parouPorLogin = !!e.login; st.parar = true; }
         }
         painel();
+       }catch(e){ log('✖ erro inesperado: ' + ((e && e.message) || e), 'err'); }
       }
     }
     const ws = [];
     for(let k = 0; k < st.paralelo; k++){ ws.push(trabalhador(k)); await espera(400); }
-    await Promise.all(ws);
-    quadros.forEach(q => q.fechar());
+    await Promise.allSettled(ws);
+    quadros.forEach(q => { try{ q.fechar(); }catch(e){} });
     st.rodando = false;
     atualizarBotoes(); painel();
     const c = contagem();
     if(parouPorLogin) log('Pausado: a sessão expirou. Faça login em outra aba e clique em Continuar.', 'err');
     else if(st.parar) log('Pausado. ' + c.ok + ' capturadas até agora; clique em Continuar para seguir.');
     else log('Concluído: ' + c.ok + ' capturadas, ' + c.erro + ' com erro. Clique em "Baixar JSON".', 'ok');
+    if(st.semGravacao) log('⚠ O progresso não ficou salvo no navegador: baixe o JSON antes de fechar a aba.', 'err');
   }
 
   /* com a caixa marcada e a rodada ainda nao iniciada, "agora" serve de previa */
@@ -1408,6 +1434,7 @@ if(isWorker){
     <button class="btn" data-a="pausar" disabled>Pausar</button>
     <button class="btn" data-a="json">Baixar JSON</button>
     <button class="btn" data-a="csv">CSV</button>
+    <button class="btn" data-a="carregar" title="Retoma a partir de um JSON baixado antes: as NCRs dele contam como já capturadas">Carregar JSON</button>
     <button class="btn" data-a="zerar" title="Apaga o progresso guardado neste navegador">Limpar</button>
   </div>
   <div class="barra"><i data-r="barra"></i></div>
@@ -1436,6 +1463,30 @@ if(isWorker){
     ui.ini.onclick = () => executar();
     ui.pausar.onclick = () => { st.parar = true; log('Pausando depois das NCRs em andamento…'); };
     bt('json').onclick = baixarJSON;
+    bt('carregar').onclick = () => {
+      if(st.rodando) return;
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = '.json,application/json';
+      inp.onchange = async () => {
+        const f = inp.files && inp.files[0];
+        if(!f) return;
+        try{
+          const obj = JSON.parse(await f.text());
+          if(!obj || !Array.isArray(obj.ncrs)) throw new Error('não é um JSON do extrator');
+          let n = 0;
+          for(const r of obj.ncrs){
+            if(!r || r.erro || !r.sysId) continue;
+            const atual = st.dados.get(r.sysId);
+            if(atual && !atual.erro && atual.capturadoEm >= r.capturadoEm) continue;
+            st.dados.set(r.sysId, r); await salvar(r); n++;
+          }
+          if(!extrairIds(ui.lista.value).length) ui.lista.value = obj.ncrs.filter(r => r && r.sysId).map(r => urlDe(r.sysId)).join('\n');
+          contarLista(); painel();
+          log(n + ' NCR(s) carregadas de ' + f.name + ' e marcadas como já capturadas.', 'ok');
+        }catch(e){ log('Não foi possível carregar ' + f.name + ': ' + e.message, 'err'); }
+      };
+      inp.click();
+    };
     bt('csv').onclick = baixarCSV;
     bt('zerar').onclick = async () => {
       if(st.rodando) return;
@@ -6282,7 +6333,9 @@ const Imp = (() => {
             ou use <b>Pegar links desta página</b> numa tela de listagem.</li>
         <li>Teste com 2 ou 3 links, clique em <b>Iniciar</b> e depois em <b>Baixar JSON</b>. Dando certo, cole a lista completa.</li>
         <li>Mantenha a aba aberta até o fim. Se a sessão expirar ou a aba fechar, faça login, cole o script de novo e clique em
-            <b>Continuar</b>: o que já foi capturado fica salvo no navegador.</li>
+            <b>Continuar</b>: o que já foi capturado fica salvo no navegador. Se o navegador não conseguir salvar
+            (aviso ⚠ no painel), baixe o JSON antes de fechar e, na próxima vez, use <b>Carregar JSON</b> no painel para
+            retomar de onde parou.</li>
         <li>Aqui no NCR Control, clique em <b>Importar histórico extraído (.json)</b>.</li>
       </ol>
       <div class="note small" style="margin-top:10px"><b>Atualizações futuras</b> — não é preciso capturar tudo de novo.
