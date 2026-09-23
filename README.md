@@ -67,9 +67,12 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
      do próprio site (mesma sessão, só leitura), lê o histórico e guarda o progresso no
      navegador — dá para pausar e continuar. Ao fim, **Baixar JSON** (há também CSV).
   3. **Importar histórico extraído (.json)** no NCR Control.
-  4. Para atualizar depois: no mesmo navegador, acrescentar à lista os links das NCRs novas,
-     marcar **Atualizar as abertas** e iniciar — só as novas e as não encerradas são
-     capturadas; importar o novo JSON (a captura mais recente de cada NCR prevalece).
+  4. Para atualizar depois (no mesmo navegador, que guarda o que já foi capturado):
+     - **NCRs novas**: lista completa do sistema com *Capturar: Só as novas*;
+     - **abertas e reabertas**: depois de importar o Excel mais recente, *Copiar links a
+       recapturar* no NCR Control (abertas + status diferente entre Excel e captura, que é
+       como uma reabertura aparece) e rodar com *Capturar: Todas da lista*.
+     Importar o novo JSON: a captura mais recente de cada NCR prevalece.
 
   Na importação, a trajetória de cada NCR até a data da captura é **substituída** pelas
   transições reais do sistema (as datas estimadas e as mudanças vistas entre duas fotos

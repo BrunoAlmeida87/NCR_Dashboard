@@ -1247,10 +1247,12 @@ if(isWorker){
     st.paralelo = Math.max(1, Math.min(6, +ui.paralelo.value || 1));
     st.rodando = true; st.parar = false; st.t0 = Date.now(); st.feitosNaSessao = 0;
     atualizarBotoes();
-    /* "atualizar abertas": marca o instante da rodada uma unica vez; um
-       Continuar depois nao recaptura o que ja foi atualizado nela */
-    if(ui.abertas.checked){ if(!st.atualizarAntesDe){ st.atualizarAntesDe = new Date().toISOString(); await metaSet('atualizarAntesDe', st.atualizarAntesDe); } }
-    else if(st.atualizarAntesDe){ st.atualizarAntesDe = null; await metaSet('atualizarAntesDe', null); }
+    /* rodada de recaptura: o instante e marcado uma unica vez; um Continuar
+       depois nao recaptura o que ja foi atualizado nesta rodada */
+    const modo = ui.recap.value;
+    if(modo !== 'novas'){
+      if(!st.recap || st.recap.modo !== modo){ st.recap = {modo, antesDe:new Date().toISOString()}; await metaSet('recap', st.recap); }
+    } else if(st.recap){ st.recap = null; await metaSet('recap', null); }
     const pend = ids.filter(id => precisa(st.dados.get(id)));
     log('Iniciando: ' + pend.length + ' NCR(s) a capturar de ' + ids.length + ' (' + st.paralelo + ' em paralelo, modo ' + st.modo + ').');
     let i = 0, parouPorLogin = false;
@@ -1268,7 +1270,9 @@ if(isWorker){
           const rec = Object.assign({sysId:id, url:urlDe(id), capturadoEm:new Date().toISOString()}, r);
           st.dados.set(id, rec); await salvar(rec);
           st.feitosNaSessao++;
-          log('✔ ' + rec.numero + ' · ' + rec.eventos.length + ' eventos · ' + ((Date.now()-t)/1000).toFixed(1) + ' s');
+          const mud = rec.eventos.filter(e => e.tipo === 'STATUS').length;
+          log('✔ ' + rec.numero + ' · ' + mud + ' mudança(s) de estado · ' + rec.eventos.length + ' registros no histórico · '
+              + (rec.statusAtual || '?') + ' · ' + ((Date.now()-t)/1000).toFixed(1) + ' s');
         }catch(e){
           if(e.message === 'interrompido'){ i--; break; }
           if(ant && !ant.erro){
@@ -1298,8 +1302,19 @@ if(isWorker){
   }
 
   /* com a caixa marcada e a rodada ainda nao iniciada, "agora" serve de previa */
-  const limiteAtualizacao = () => st.atualizarAntesDe || (!st.rodando && ui.abertas && ui.abertas.checked ? new Date().toISOString() : null);
-  const aAtualizar = r => { const lim = limiteAtualizacao(); return !!(lim && r && !r.erro && !RE_FINAL.test(r.statusAtual || '') && r.capturadoEm < lim); };
+  function rodadaRecap(){
+    const modo = ui.recap ? ui.recap.value : 'novas';
+    if(modo === 'novas') return null;
+    if(st.recap && st.recap.modo === modo) return st.recap;
+    return st.rodando ? null : {modo, antesDe:new Date().toISOString()};
+  }
+  /* "abertas" pula o que ja estava encerrado; "todas" recaptura tudo da lista
+     (e o caminho para NCRs reabertas: a lista vem do NCR Control) */
+  const aAtualizar = r => {
+    const rc = rodadaRecap();
+    if(!rc || !r || r.erro || !(r.capturadoEm < rc.antesDe)) return false;
+    return rc.modo === 'todas' || !RE_FINAL.test(r.statusAtual || '');
+  };
   const precisa = r => !r || (r.erro && (r.tentativas || 0) <= TENTATIVAS) || aAtualizar(r);
   function contagem(){
     let ok = 0, erro = 0, atu = 0;
@@ -1380,7 +1395,12 @@ if(isWorker){
   </div>
   <div class="lin">
     <label>Em paralelo <select data-r="paralelo"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
-    <label title="Recaptura as NCRs já capturadas que ainda não estavam encerradas (CEDOC Closure/Closed); as encerradas são mantidas"><input type="checkbox" data-r="abertas"> Atualizar as abertas</label>
+  </div>
+  <div class="lin">
+    <label title="O que fazer com as NCRs da lista que já foram capturadas antes">Capturar <select data-r="recap">
+      <option value="novas">Só as novas</option>
+      <option value="abertas">Novas + recapturar as abertas</option>
+      <option value="todas">Todas da lista (recapturar tudo)</option></select></label>
     <label>Modo <select data-r="modo"><option value="iframe" selected>Quadro interno</option><option value="janela">Janela</option></select></label>
   </div>
   <div class="lin">
@@ -1424,10 +1444,10 @@ if(isWorker){
       log('Progresso apagado.');
     };
     ui.lista.oninput = () => { contarLista(); painel(); };
-    /* desmarcar encerra a rodada de atualizacao; marcar de novo abre outra */
-    ui.abertas.onchange = async () => {
+    /* trocar a opcao encerra a rodada de recaptura em andamento */
+    ui.recap.onchange = async () => {
       if(st.rodando) return;
-      if(!ui.abertas.checked && st.atualizarAntesDe){ st.atualizarAntesDe = null; await metaSet('atualizarAntesDe', null); }
+      if(st.recap && st.recap.modo !== ui.recap.value){ st.recap = null; await metaSet('recap', null); }
       painel();
     };
   }
@@ -1452,7 +1472,7 @@ if(isWorker){
       eta = ' · faltam ~' + (min < 1 ? '<1' : min) + ' min';
     }
     ui.cont.textContent = c.total ? (c.ok + ' capturadas · ' + c.erro + ' com erro · ' + c.pend + ' pendentes de ' + c.total
-      + (c.atu ? ' (' + c.atu + ' abertas a atualizar)' : '') + eta) : '';
+      + (c.atu ? ' (' + c.atu + ' a recapturar)' : '') + eta) : '';
     if(!st.rodando) atualizarBotoes();
   }
   function log(msg, cls){
@@ -1468,9 +1488,9 @@ if(isWorker){
   async function iniciar(){
     montar();
     try{
-      const [regs, fila, antes] = await Promise.all([todos(), metaGet('fila'), metaGet('atualizarAntesDe')]);
-      st.atualizarAntesDe = antes || null;
-      ui.abertas.checked = !!st.atualizarAntesDe;
+      const [regs, fila, recap] = await Promise.all([todos(), metaGet('fila'), metaGet('recap')]);
+      st.recap = recap || null;
+      if(st.recap) ui.recap.value = st.recap.modo;
       (regs || []).forEach(r => st.dados.set(r.sysId, r));
       if(fila && fila.length){ ui.lista.value = fila.map(urlDe).join('\n'); }
       contarLista(); painel(); atualizarBotoes();
@@ -3406,8 +3426,29 @@ const SistemaHist = (() => {
     ks.forEach(k => { if(d.ncrs[k]) noBanco++; const c = d.sistema[k].capturadoEm; if(!ultima || c > ultima) ultima = c; });
     return {total:ks.length, noBanco, fora:ks.length - noBanco, ultima, ncrs:Object.keys(d.ncrs).length};
   }
+  /* NCRs capturadas que precisam de nova captura: tudo o que nao esta
+     encerrado nas duas fontes com o mesmo status. Pega as abertas e tambem
+     as REABERTAS depois da captura (o Excel mostra aberta, o sistema
+     registrou encerrada) e qualquer divergencia entre as duas. */
+  function paraRecapturar(){
+    const d = DB.all();
+    const out = {links:[], abertas:0, divergentes:0, semLink:0};
+    Object.keys(d.sistema).forEach(k => {
+      const h = d.sistema[k], rec = d.ncrs[k];
+      if(!rec) return;
+      const t = transicoes(h);
+      const capt = h.statusAtual || (t.length ? t[t.length-1].para : '');
+      const excel = rec.status || '';
+      const encerradaNasDuas = Flow.isFinal(excel) && Flow.isFinal(capt) && n(excel) === n(capt);
+      if(encerradaNasDuas) return;
+      if(!h.url && !h.sysId){ out.semLink++; return; }
+      if(n(excel) !== n(capt)) out.divergentes++; else out.abertas++;
+      out.links.push(h.url || h.sysId);
+    });
+    return out;
+  }
   const script = () => document.getElementById('extratorSrc').textContent.trim() + '\n';
-  return {importar, aplicar, reaplicar, resumo, script, transicoes, FONTE, ROTULO};
+  return {importar, aplicar, reaplicar, resumo, script, transicoes, paraRecapturar, FONTE, ROTULO};
 })();
 
 /* ============================ Charts (SVG proprio, sem dependencias) ============================ */
@@ -6186,6 +6227,19 @@ const Imp = (() => {
     $('#sisCopiar', host).onclick = copiarExtrator;
     $('#sisBaixar', host).onclick = () => Util.download('extrator_historico_ncr.js', SistemaHist.script(), 'text/javascript;charset=utf-8');
     $('#sisAjuda', host).onclick = ajudaExtrator;
+    if($('#sisRecap', host)) $('#sisRecap', host).onclick = copiarRecaptura;
+  }
+  async function copiarRecaptura(){
+    const r = SistemaHist.paraRecapturar();
+    if(!r.links.length){ Util.toast('Nenhuma NCR precisa de nova captura: todas estão encerradas no Excel e no sistema com o mesmo status.', 'ok', 'Extrator'); return; }
+    const t = r.links.join('\n') + '\n';
+    const resumo = r.links.length + ' NCR(s): ' + r.abertas + ' aberta(s) e ' + r.divergentes + ' com status diferente entre o Excel e a última captura (inclui reabertas)';
+    try{ await navigator.clipboard.writeText(t); Util.toast(resumo + '. No extrator, use "Todas da lista".', 'ok', 'Links copiados'); }
+    catch(e){
+      UI.modal({size:'md', title:'Links a recapturar', sub:esc(resumo),
+        body:'<textarea class="mono small" style="width:100%;height:50vh" readonly>' + esc(t) + '</textarea>'});
+      const ta = $('#modalBody textarea'); ta.focus(); ta.select();
+    }
   }
 
   /* ---------- histórico do sistema (NCR Integrada) ---------- */
@@ -6204,6 +6258,7 @@ const Imp = (() => {
       + '<button class="btn primary" id="sisImp">Importar histórico extraído (.json)</button>'
       + '<button class="btn" id="sisCopiar" title="Copia o script para colar no Console (F12) do NCR Integrada">Copiar extrator</button>'
       + '<button class="btn" id="sisBaixar">Baixar extrator (.js)</button>'
+      + (r.total ? '<button class="btn" id="sisRecap" title="Links das NCRs abertas, reabertas ou com status diferente entre o Excel e a última captura">Copiar links a recapturar</button>' : '')
       + '<button class="btn" id="sisAjuda">Como usar</button></div>') + '</div>';
   }
   async function copiarExtrator(){
@@ -6231,10 +6286,13 @@ const Imp = (() => {
         <li>Aqui no NCR Control, clique em <b>Importar histórico extraído (.json)</b>.</li>
       </ol>
       <div class="note small" style="margin-top:10px"><b>Atualizações futuras</b> — não é preciso capturar tudo de novo.
-      Cole o extrator no mesmo navegador (o progresso anterior continua lá), acrescente à lista os links das NCRs novas,
-      marque <b>Atualizar as abertas</b> e clique em <b>Iniciar</b>: ele captura só as NCRs novas e recaptura as que não
-      estavam encerradas (CEDOC Closure/Closed ficam como estão). Depois baixe o JSON e importe aqui; a captura mais
-      recente de cada NCR substitui a anterior.</div>
+      Use o mesmo navegador (o extrator lembra o que já capturou) e faça duas passadas:<br>
+      <b>1. NCRs novas:</b> cole a lista completa de links do sistema, em <b>Capturar</b> escolha <b>Só as novas</b> e inicie.<br>
+      <b>2. Abertas e reabertas:</b> depois de importar o Excel mais recente, clique aqui em <b>Copiar links a recapturar</b>
+      (NCRs abertas, e as que têm status diferente entre o Excel e a última captura — é assim que as reabertas aparecem),
+      cole no extrator, escolha <b>Todas da lista</b> e inicie.<br>
+      Baixe o JSON e importe aqui; a captura mais recente de cada NCR substitui a anterior.
+      Sem o Excel atualizado, a opção <b>Novas + recapturar as abertas</b> também serve, mas não enxerga reaberturas.</div>
       <div class="note small" style="margin-top:10px">O extrator só lê as páginas que você já consegue abrir, com a sua sessão, e não
       altera nada no NCR Integrada. O arquivo final fica no seu computador.<br><br>
       Na importação, cada NCR tem a trajetória refeita com as datas exatas do sistema até o momento da captura. O que os Excel
