@@ -1200,35 +1200,78 @@ if(isWorker){
   const espera = ms => new Promise(r => setTimeout(r, ms));
   const urlDe = id => location.origin + '/#/ncr/' + id + '/editar';
 
-  function novoQuadro(k){
-    if(st.modo === 'janela'){
-      const w = window.open('about:blank', 'ncrExtrator' + k, 'width=1100,height=750');
-      if(!w) throw new Error('O navegador bloqueou a janela. Permita pop-ups para este site e tente de novo.');
-      return {win: () => w, fechar: () => { try{ w.close(); }catch(e){} },
-              ir: url => { w.location.replace(url); }};
-    }
-    const f = document.createElement('iframe');
-    f.style.cssText = 'position:fixed;left:-12000px;top:0;width:1280px;height:900px;border:0;visibility:hidden';
-    f.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(f);
-    return {win: () => f.contentWindow, fechar: () => f.remove(), ir: url => { f.src = url; }};
+  /* Memoria: recarregar o sistema inteiro para cada NCR, com o Console
+     recebendo dezenas de avisos por pagina (o moment.js do NCR Integrada),
+     prende as paginas antigas na memoria e o navegador vai ficando lento.
+     Por isso: (1) o sistema e carregado uma vez por quadro e as NCRs sao
+     abertas so trocando o endereco interno (#/ncr/<id>/editar); (2) o
+     Console do quadro e silenciado; (3) o quadro e recriado do zero a cada
+     RECICLAR NCRs, devolvendo toda a memoria acumulada pelo sistema. */
+  const RECICLAR = 40;
+  const ESPERA_ROTA = 15000;            /* troca de endereco sem recarga */
+
+  function silenciar(win){
+    try{
+      const c = win.console;
+      if(!c || c.__ncrMudo) return;
+      const nada = () => {};
+      ['log','info','warn','error','debug','trace','dir','table','group','groupCollapsed'].forEach(k => { try{ c[k] = nada; }catch(e){} });
+      c.__ncrMudo = true;
+    }catch(e){}
   }
 
-  async function capturar(q, id){
-    /* passa por about:blank para forçar recarga completa da aplicação:
-       mudar só o "#/ncr/..." poderia reaproveitar a tela da NCR anterior */
-    q.ir('about:blank');
-    await espera(60);
-    q.ir(urlDe(id));
+  function novoQuadro(k){
+    const q = {k, usos:0, pronto:false, rotaRuim:0, ultimaAssinatura:null, ultimoNumero:null};
+    if(st.modo === 'janela'){
+      let w = null;
+      q.criar = () => {
+        w = window.open('about:blank', 'ncrExtrator' + k, 'width=1100,height=750');
+        if(!w) throw new Error('O navegador bloqueou a janela. Permita pop-ups para este site e tente de novo.');
+      };
+      q.win = () => w;
+      q.fechar = () => { try{ w.close(); }catch(e){} };
+      /* a janela nao pode ser reaberta sem clique (pop-up bloqueado): so esvazia */
+      q.reset = async () => { try{ w.location.replace('about:blank'); }catch(e){} await espera(300); };
+      q.ir = url => { w.location.replace(url); };
+    } else {
+      let f = null;
+      q.criar = () => {
+        f = document.createElement('iframe');
+        f.style.cssText = 'position:fixed;left:-12000px;top:0;width:1280px;height:900px;border:0;visibility:hidden';
+        f.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(f);
+      };
+      q.win = () => f.contentWindow;
+      q.fechar = () => { try{ f.src = 'about:blank'; f.remove(); }catch(e){} };
+      q.ir = url => { f.src = url; };
+      q.reset = async () => { q.fechar(); await espera(q.k * 150 + 200); q.criar(); };
+    }
+    q.criar();
+    return q;
+  }
+
+  /* recria o quadro do zero: descarta tudo o que o sistema acumulou nele */
+  async function reciclar(q){
+    await q.reset();
+    q.pronto = false; q.usos = 0; q.ultimaAssinatura = null; q.ultimoNumero = null;
+  }
+
+  const assinatura = r => r.numero + '|' + r.eventos.length + '|' + (r.eventos[0] ? r.eventos[0].dataTexto + r.eventos[0].texto : '');
+  const temId = (doc, id) => { try{ return !!doc.querySelector('[href*="' + id + '"]'); }catch(e){ return false; } };
+
+  /* espera a pagina da NCR ficar pronta e estavel; em modo rota, so aceita
+     quando ela ja nao e a NCR anterior */
+  async function aguardar(q, id, limite, rota){
     const t0 = Date.now();
-    let ultimo = -1, estavel = 0, chegou = 0;
-    while(Date.now() - t0 < TEMPO_LIMITE){
+    let ultimo = null, estavel = 0, chegou = 0;
+    while(Date.now() - t0 < limite){
       if(st.parar) throw new Error('interrompido');
-      await espera(500);
+      await espera(rota ? 250 : 500);
       let win, doc;
       try{ win = q.win(); doc = win.document; void win.location.href; }
       catch(e){ throw new Error('O site não permite abrir a NCR num quadro interno. Use o modo "Janela".'); }
       if(!doc) continue;
+      silenciar(win);
       if(!chegou){
         if(!String(win.location.hash).includes(id)) continue;
         chegou = Date.now();
@@ -1236,16 +1279,47 @@ if(isWorker){
       if(pareceLogin(win)) { const e = new Error('Sessão expirada: faça login de novo e clique em Continuar.'); e.login = true; throw e; }
       const r = lerPagina(doc);
       if(!r){
-        /* histórico ainda ausente depois de alguns segundos: abre a aba, caso
-           a tela só busque os dados quando ela é exibida */
+        /* historico ainda ausente depois de alguns segundos: abre a aba, caso
+           a tela so busque os dados quando ela e exibida */
         if(Date.now() - chegou > 4000) clicarAbaHistorico(doc);
         continue;
       }
-      /* a lista de eventos às vezes chega em partes: espera ela parar de crescer */
-      if(r.eventos.length === ultimo){ if(++estavel >= 2) return r; }
-      else { ultimo = r.eventos.length; estavel = 0; }
+      const sig = assinatura(r);
+      if(rota){
+        /* a tela ainda pode estar mostrando a NCR anterior */
+        if(sig === q.ultimaAssinatura) continue;
+        if(!temId(doc, id) && r.numero === q.ultimoNumero) continue;
+      }
+      /* a lista de eventos as vezes chega em partes: espera ela parar de mudar */
+      if(sig === ultimo){ if(++estavel >= 2) return r; }
+      else { ultimo = sig; estavel = 0; }
     }
-    throw new Error('Tempo esgotado (' + TEMPO_LIMITE/1000 + ' s) esperando a página carregar');
+    return null;
+  }
+
+  async function capturar(q, id){
+    if(q.usos >= RECICLAR) await reciclar(q);
+    let r = null;
+    if(q.pronto && q.rotaRuim < 3){
+      /* sistema ja carregado neste quadro: so troca o endereco */
+      try{ q.win().location.hash = '#/ncr/' + id + '/editar'; }catch(e){}
+      r = await aguardar(q, id, ESPERA_ROTA, true);
+      if(r) q.rotaRuim = 0; else q.rotaRuim++;
+    }
+    if(!r){
+      /* primeira NCR do quadro, ou a troca de endereco nao funcionou: recarga completa */
+      if(q.pronto) await reciclar(q);
+      q.ir('about:blank');
+      await espera(60);
+      q.ir(urlDe(id));
+      r = await aguardar(q, id, TEMPO_LIMITE, false);
+      if(!r) throw new Error('Tempo esgotado (' + TEMPO_LIMITE/1000 + ' s) esperando a página carregar');
+      q.pronto = true;
+    }
+    q.usos++;
+    q.ultimaAssinatura = assinatura(r);
+    q.ultimoNumero = r.numero;
+    return r;
   }
 
   /* ---------------- estado e execução ---------------- */
@@ -6331,7 +6405,9 @@ const Imp = (() => {
         <li>No painel que aparece no canto da página, cole a lista de links das NCRs
             (<code>…/#/ncr/65f05c…/editar</code>, um por linha; IDs soltos também servem)
             ou use <b>Pegar links desta página</b> numa tela de listagem.</li>
-        <li>Teste com 2 ou 3 links, clique em <b>Iniciar</b> e depois em <b>Baixar JSON</b>. Dando certo, cole a lista completa.</li>
+        <li>Teste com 2 ou 3 links, clique em <b>Iniciar</b> e depois em <b>Baixar JSON</b>. Dando certo, cole a lista completa.
+            Depois de clicar em Iniciar, <b>feche o F12</b>: o painel continua rodando, e o Console aberto recebendo os avisos do
+            sistema deixa o navegador lento.</li>
         <li>Mantenha a aba aberta até o fim. Se a sessão expirar ou a aba fechar, faça login, cole o script de novo e clique em
             <b>Continuar</b>: o que já foi capturado fica salvo no navegador. Se o navegador não conseguir salvar
             (aviso ⚠ no painel), baixe o JSON antes de fechar e, na próxima vez, use <b>Carregar JSON</b> no painel para
