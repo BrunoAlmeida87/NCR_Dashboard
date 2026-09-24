@@ -247,6 +247,28 @@ table.tbl .ncrid{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink
 .tl-item.t-CAMPO::before{background:var(--axis);width:8px;height:8px;top:5px;left:-21px}
 .tl-date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .tl-main{font-size:13px;margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.flx-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.flx-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;align-items:start}
+.flx-col{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px}
+.flx-col.flx-solto{border-style:dashed}
+.flx-h{display:flex;align-items:center;gap:4px;margin-bottom:8px}
+.flx-n{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:11px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+.flx-solto .flx-n{background:var(--muted)}
+.flx-nome{flex:1;min-width:0;font-weight:600;font-size:12.5px;padding:4px 6px}
+.flx-list{min-height:44px;border-radius:8px;padding:2px;transition:background .12s}
+.flx-list.alvo{background:var(--accent-wash);outline:2px dashed var(--accent)}
+.flx-vazio{font-size:11.5px;color:var(--muted);text-align:center;padding:12px 4px}
+.flx-chip{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin-bottom:6px;cursor:grab}
+.flx-chip.final{border-left:3px solid var(--good)}
+.flx-chip.arrastando{opacity:.45}
+.flx-chip-top{display:flex;align-items:center;gap:6px}
+.flx-chip-nome{flex:1;min-width:0;font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flx-x{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
+.flx-x:hover{color:var(--critical)}
+.flx-chip-ctl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px}
+.flx-chip-ctl select{font-size:11px;padding:2px 4px;flex:1;min-width:0}
+.flx-fim{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--text-2)}
+.flx-add{width:100%;margin-top:4px;font-size:11.5px;padding:5px 7px}
 /* texto longo no detalhe da NCR: abre por inteiro com um clique */
 .xp-t{font-size:11.5px;margin-left:4px;white-space:nowrap}
 #modalBody table.tbl td.corta{cursor:zoom-in}
@@ -2406,17 +2428,18 @@ const DB = (() => {
   /* depois de mudar a etapa de um status: refaz ordem e classificacao dos
      movimentos ja gravados e os contadores de cada NCR */
   function reclassificarFluxo(){
+    let mudou = 0;
     d.historico.forEach(e => {
       if(!Flow.isFluxoEvt(e) || e.de == null || e.cls === 'INICIAL') return;
-      const od = Flow.ordemInferida(e.de), op = Flow.ordemInferida(e.para);
-      if(od === e.ordemDe && op === e.ordemPara) return;
-      e.ordemDe = od; e.ordemPara = op;
+      e.ordemDe = Flow.ordemInferida(e.de); e.ordemPara = Flow.ordemInferida(e.para);
       if(e.cls === 'RETORNO' && /rejeitada/.test(e.obs || '')) return;   /* rejeicao registrada no export */
-      e.cls = Flow.classificar(e.de, e.para);
+      const cls = Flow.classificar(e.de, e.para);
+      if(cls !== e.cls){ e.cls = cls; mudou++; }
     });
     for(const k in d.ncrs){
       const n = d.ncrs[k];
       n.ordem = Flow.ordemDe(n.status);
+      n.fechada = Flow.isFinal(n.status);
       const mov = {avancos:0, retornos:0, laterais:0, fechamentos:0, reaberturas:0, total:0, campos:(n.mov && n.mov.campos) || 0};
       eventos(k).forEach(e => {
         if(!Flow.isFluxoEvt(e) || e.cls === 'INICIAL' || e.de == null) return;
@@ -2430,6 +2453,7 @@ const DB = (() => {
       n.mov = mov;
     }
     if(typeof SistemaHist !== 'undefined') SistemaHist.reaplicar();
+    return mudou;
   }
   function contagem(){
     return {ncrs: Object.keys(d.ncrs).length, produtos: Object.keys(d.produtos).length,
@@ -2476,7 +2500,7 @@ const DB = (() => {
             produtos:d.produtos, historico:d.historico, arquivos_processados:d.arquivos, importacoes:d.importacoes,
             historico_sistema:d.sistema};
   }
-  return {all, cfg, load, save, reindex, contagem, eventos, produtosDe, ncrsDeProduto,
+  return {all, cfg, load, save, reindex, reclassificarFluxo, contagem, eventos, produtosDe, ncrsDeProduto,
           listaNcrs, campos, limpar, snapshot, importarSnapshot, idx};
 })();
 
@@ -6890,8 +6914,259 @@ const Arq = (() => {
   return {render};
 })();
 
+/* ============================ Editor de etapas do fluxo ============================
+   Configuracoes -> Fluxo e status. Cada etapa e uma coluna e cada status um
+   cartao: arrastar o cartao (ou escolher no seletor) muda a etapa a que ele
+   pertence. As mudancas ficam num rascunho ate "Salvar"; ao salvar, a
+   configuracao e gravada e todo o historico e reclassificado na hora
+   (avanço / retorno / lateral dependem da etapa de cada status).
+   ================================================================================= */
+const EditorFluxo = (() => {
+  let rasc = null, sujo = false, raiz = null, arrastando = null;
+  const semNum = t => String(t || '').replace(/^\s*\d+\s*[·.\-–]\s*/, '').trim();
+  const nk = t => Util.norm(t || '');
+
+  function doCfg(cfg){
+    const ordens = new Set((cfg.fluxo || []).map(f => +f.ordem));
+    Object.keys(cfg.etapas || {}).forEach(k => ordens.add(+k));
+    const etapas = Array.from(ordens).filter(o => !isNaN(o)).sort((a, b) => a - b)
+      .map(o => ({ordem:o, nome: semNum((cfg.etapas || {})[o]) || ('Etapa ' + o)}));
+    const finais = new Set((cfg.statusFinais || []).map(nk));
+    const itens = (cfg.fluxo || []).map(f => ({status:String(f.status), ordem:+f.ordem, final:finais.has(nk(f.status))}));
+    return {etapas, itens, unfounded:(cfg.statusUnfounded || []).slice()};
+  }
+  /* status que aparecem nas NCRs ou no historico e nao estao no rascunho */
+  function statusDosDados(){
+    const conhecidos = new Set(rasc.itens.map(i => nk(i.status)));
+    const cont = new Map();
+    const add = st => {
+      if(!st) return;
+      const k = nk(st);
+      if(conhecidos.has(k)) return;
+      const c = cont.get(k) || {status:String(st).trim(), n:0};
+      c.n++; cont.set(k, c);
+    };
+    DB.listaNcrs().forEach(n => add(n.status));
+    DB.all().historico.forEach(e => { if(Flow.isFluxoEvt(e)){ add(e.para); add(e.de); } });
+    return Array.from(cont.values()).sort((a, b) => b.n - a.n || Util.cmp(a.status, b.status));
+  }
+  function ncrsPorStatus(){
+    const m = new Map();
+    DB.listaNcrs().forEach(n => { const k = nk(n.status); m.set(k, (m.get(k) || 0) + 1); });
+    return m;
+  }
+
+  function chip(it, qtd, opcoesEtapa){
+    const q = qtd.get(nk(it.status)) || 0;
+    return `<div class="flx-chip${it.final ? ' final' : ''}" draggable="true" data-st="${esc(it.status)}">
+      <div class="flx-chip-top">
+        <div class="flx-chip-nome" title="${esc(it.status)}">${esc(it.status)}</div>
+        <span class="small muted" title="NCRs neste status agora">${q ? Util.fNum(q) : '0'}</span>
+        ${it.ordem != null ? '<button class="flx-x" data-tirar title="Tirar do fluxo (vai para Sem etapa)">✕</button>' : ''}
+      </div>
+      <div class="flx-chip-ctl">
+        <select data-mover title="Mover para outra etapa">${opcoesEtapa(it.ordem)}</select>
+        <label class="flx-fim" title="Uma NCR neste status está encerrada"><input type="checkbox" data-final${it.final ? ' checked' : ''}${it.ordem == null ? ' disabled' : ''}> encerra</label>
+      </div></div>`;
+  }
+
+  function desenhar(){
+    const qtd = ncrsPorStatus();
+    const opcoesEtapa = sel => rasc.etapas.map(e => `<option value="${e.ordem}"${e.ordem === sel ? ' selected' : ''}>${e.ordem} · ${esc(e.nome)}</option>`).join('')
+      + `<option value=""${sel == null ? ' selected' : ''}>— sem etapa —</option>`;
+    const doDados = statusDosDados();
+    const soltos = rasc.itens.filter(i => i.ordem == null);
+    const colunas = rasc.etapas.map((e, idx) => {
+      const itens = rasc.itens.filter(i => i.ordem === e.ordem);
+      return `<div class="flx-col" data-ordem="${e.ordem}">
+        <div class="flx-h">
+          <span class="flx-n">${e.ordem}</span>
+          <input class="flx-nome" value="${esc(e.nome)}" data-nome="${e.ordem}" title="Nome da etapa">
+          <button class="btn sm ghost" data-mvetapa="-1" ${idx === 0 ? 'disabled' : ''} title="Mover etapa para a esquerda">◀</button>
+          <button class="btn sm ghost" data-mvetapa="1" ${idx === rasc.etapas.length - 1 ? 'disabled' : ''} title="Mover etapa para a direita">▶</button>
+          ${itens.length ? '' : '<button class="btn sm ghost" data-rmetapa title="Remover etapa vazia">✕</button>'}
+        </div>
+        <div class="flx-list" data-drop="${e.ordem}">${itens.map(i => chip(i, qtd, opcoesEtapa)).join('') || '<div class="flx-vazio">arraste um status para cá</div>'}</div>
+        <input class="flx-add" data-addst="${e.ordem}" placeholder="+ novo status (Enter)">
+      </div>`;
+    }).join('');
+    const semEtapa = soltos.map(i => chip(i, qtd, opcoesEtapa)).join('')
+      + doDados.map(d => {
+          const inf = Flow.ordemInferida(d.status);
+          return chip({status:d.status, ordem:null, final:false}, qtd, opcoesEtapa).replace('<div class="flx-chip-ctl">',
+            '<div class="small muted" style="margin:2px 0 4px">aparece ' + Util.fNum(d.n) + 'x nos dados'
+            + (inf != null ? ' · hoje cai na etapa ' + inf + ' pelo número do nome' : ' · hoje fica fora do fluxo') + '</div><div class="flx-chip-ctl">');
+        }).join('');
+    raiz.innerHTML = `
+      <div class="flx-bar">
+        <span class="small muted">Arraste um status para outra coluna, ou use o seletor no cartão. Status na <b>mesma etapa</b>
+          contam como caminho paralelo (movimento lateral); ir para uma etapa de número maior é <b>avanço</b>, menor é <b>retorno</b>.</span>
+        <span class="right hstack" style="gap:6px">
+          ${sujo ? '<span class="badge warn">alterações não salvas</span>' : ''}
+          <button class="btn sm" data-novaetapa>+ Nova etapa</button>
+          <button class="btn sm ghost" data-padrao>Restaurar padrão</button>
+          <button class="btn sm" data-descartar ${sujo ? '' : 'disabled'}>Descartar</button>
+          <button class="btn sm primary" data-salvar ${sujo ? '' : 'disabled'}>Salvar e reclassificar</button>
+        </span>
+      </div>
+      <div class="flx-board">${colunas}
+        <div class="flx-col flx-solto" data-ordem="">
+          <div class="flx-h"><span class="flx-n">?</span><b style="flex:1">Sem etapa</b></div>
+          <div class="small muted" style="margin-bottom:6px">O número em cada cartão é quantas NCRs estão nesse status agora.</div>
+          <div class="small muted" style="margin-bottom:6px">Status encontrados nos dados que ainda não estão em nenhuma etapa. Arraste-os para a etapa certa.</div>
+          <div class="flx-list" data-drop="">${semEtapa || '<div class="flx-vazio">todos os status dos dados estão em uma etapa</div>'}</div>
+        </div>
+      </div>`;
+  }
+
+  function item(st){
+    const k = nk(st);
+    let it = rasc.itens.find(i => nk(i.status) === k);
+    if(!it){ it = {status:String(st), ordem:null, final:false}; rasc.itens.push(it); }
+    return it;
+  }
+  function mudou(){ sujo = true; desenhar(); }
+  function mover(st, ordem){
+    const it = item(st);
+    it.ordem = ordem === '' || ordem == null ? null : +ordem;
+    if(it.ordem == null) it.final = false;
+    /* ao mudar de etapa, o cartao vai para o fim da nova coluna */
+    rasc.itens.splice(rasc.itens.indexOf(it), 1); rasc.itens.push(it);
+    mudou();
+  }
+
+  function ligar(){
+    raiz.addEventListener('change', ev => {
+      const t = ev.target, c = t.closest('.flx-chip');
+      if(t.matches('[data-mover]') && c) mover(c.dataset.st, t.value);
+      else if(t.matches('[data-final]') && c){ item(c.dataset.st).final = t.checked; mudou(); }
+    });
+    raiz.addEventListener('input', ev => {
+      const t = ev.target;
+      if(t.matches('[data-nome]')){
+        const e = rasc.etapas.find(x => x.ordem === +t.dataset.nome);
+        if(e){ e.nome = t.value; if(!sujo){ sujo = true; const b = raiz.querySelector('[data-salvar]'); if(b){ b.disabled = false; raiz.querySelector('[data-descartar]').disabled = false; } } }
+      }
+    });
+    raiz.addEventListener('keydown', ev => {
+      const t = ev.target;
+      if(t.matches('[data-addst]') && ev.key === 'Enter'){
+        const nome = t.value.trim();
+        if(!nome) return;
+        const it = item(nome);
+        if(it.ordem != null && it.ordem !== +t.dataset.addst){ Util.toast('"' + nome + '" já está na etapa ' + it.ordem + ' — foi movido para cá.', 'warn'); }
+        mover(nome, t.dataset.addst);
+        const campo = raiz.querySelector('[data-addst="' + t.dataset.addst + '"]'); if(campo) campo.focus();
+      }
+    });
+    raiz.addEventListener('click', async ev => {
+      const t = ev.target.closest('button');
+      if(!t || !raiz.contains(t)) return;
+      const col = t.closest('.flx-col'), c = t.closest('.flx-chip');
+      if(t.matches('[data-tirar]') && c) mover(c.dataset.st, null);
+      else if(t.matches('[data-mvetapa]') && col){
+        const i = rasc.etapas.findIndex(e => e.ordem === +col.dataset.ordem), j = i + (+t.dataset.mvetapa);
+        if(j < 0 || j >= rasc.etapas.length) return;
+        /* troca a posicao: os status acompanham a sua etapa */
+        const a = rasc.etapas[i], b = rasc.etapas[j];
+        rasc.itens.forEach(it => { if(it.ordem === a.ordem) it.ordem = -1; });
+        rasc.itens.forEach(it => { if(it.ordem === b.ordem) it.ordem = a.ordem; });
+        rasc.itens.forEach(it => { if(it.ordem === -1) it.ordem = b.ordem; });
+        const na = a.nome; a.nome = b.nome; b.nome = na;
+        mudou();
+      }
+      else if(t.matches('[data-rmetapa]') && col){
+        rasc.etapas = rasc.etapas.filter(e => e.ordem !== +col.dataset.ordem);
+        mudou();
+      }
+      else if(t.matches('[data-novaetapa]')){
+        const o = rasc.etapas.reduce((m, e) => Math.max(m, e.ordem), 0) + 1;
+        rasc.etapas.push({ordem:o, nome:'Nova etapa'});
+        mudou();
+        const inp = raiz.querySelector('[data-nome="' + o + '"]'); if(inp){ inp.focus(); inp.select(); }
+      }
+      else if(t.matches('[data-padrao]')){
+        if(!await UI.confirmar('Restaurar etapas padrão', 'As etapas e status voltam ao padrão do sistema. Nada é gravado até você clicar em <b>Salvar e reclassificar</b>.', 'Restaurar')) return;
+        rasc = doCfg({fluxo:Cfg.FLUXO_PADRAO, etapas:Cfg.ETAPAS, statusFinais:Cfg.PADRAO.statusFinais, statusUnfounded:Cfg.PADRAO.statusUnfounded});
+        mudou();
+      }
+      else if(t.matches('[data-descartar]')){ rasc = doCfg(DB.cfg()); sujo = false; desenhar(); }
+      else if(t.matches('[data-salvar]')) await salvar();
+    });
+    /* arrastar e soltar */
+    raiz.addEventListener('dragstart', ev => {
+      const c = ev.target.closest && ev.target.closest('.flx-chip');
+      if(!c) return;
+      arrastando = c.dataset.st;
+      ev.dataTransfer.effectAllowed = 'move';
+      try{ ev.dataTransfer.setData('text/plain', arrastando); }catch(e){}
+      c.classList.add('arrastando');
+    });
+    raiz.addEventListener('dragend', () => { arrastando = null; raiz.querySelectorAll('.flx-list.alvo').forEach(x => x.classList.remove('alvo')); });
+    raiz.addEventListener('dragover', ev => {
+      const l = ev.target.closest && ev.target.closest('.flx-list');
+      if(!l || arrastando == null) return;
+      ev.preventDefault();
+      raiz.querySelectorAll('.flx-list.alvo').forEach(x => { if(x !== l) x.classList.remove('alvo'); });
+      l.classList.add('alvo');
+    });
+    raiz.addEventListener('drop', ev => {
+      const l = ev.target.closest && ev.target.closest('.flx-list');
+      if(!l || arrastando == null) return;
+      ev.preventDefault();
+      const st = arrastando; arrastando = null;
+      mover(st, l.dataset.drop);
+    });
+  }
+
+  async function salvar(){
+    const cfg = DB.cfg();
+    const vistos = new Set(), fluxo = [];
+    const posEtapa = new Map(rasc.etapas.map((e, i) => [e.ordem, i]));
+    rasc.itens.forEach(it => {
+      if(it.ordem == null || !posEtapa.has(it.ordem)) return;
+      const k = nk(it.status);
+      if(!it.status.trim() || vistos.has(k)) return;
+      vistos.add(k);
+      fluxo.push({ordem:it.ordem, status:it.status.trim(), final:it.final});
+    });
+    if(!fluxo.length){ Util.toast('Coloque ao menos um status numa etapa.', 'warn'); return; }
+    /* numera as etapas na ordem em que aparecem na tela: 1, 2, 3... */
+    const renum = new Map(rasc.etapas.map((e, i) => [e.ordem, i + 1]));
+    cfg.fluxo = fluxo.map(f => ({ordem:renum.get(f.ordem), status:f.status}))
+      .sort((a, b) => a.ordem - b.ordem);
+    cfg.etapas = {};
+    rasc.etapas.forEach((e, i) => { cfg.etapas[i + 1] = (i + 1) + ' · ' + (e.nome.trim() || 'Etapa ' + (i + 1)); });
+    cfg.statusFinais = fluxo.filter(f => f.final).map(f => f.status);
+    const finais = new Set(cfg.statusFinais.map(nk));
+    cfg.statusUnfounded = (rasc.unfounded || []).filter(u => finais.has(nk(u)));
+    UI.busy.show('Reclassificando o histórico...', 'aplicando as novas etapas a todos os movimentos');
+    try{
+      await Util.sleep(30);
+      DB.reindex();
+      const n = DB.reclassificarFluxo();
+      DB.reindex();
+      await DB.save(['config', 'ncr', 'historico']);
+      UI.busy.hide();
+      rasc = doCfg(cfg); sujo = false;
+      Filters.invalidateFacets();
+      UI.refresh();
+      Util.toast('Etapas salvas. ' + Util.fNum(n) + ' movimento(s) mudaram de classificação.', 'ok', 'Fluxo');
+    }catch(e){ UI.busy.hide(); Util.toast(e.message, 'err', 'Fluxo'); }
+  }
+
+  function montar(el){
+    raiz = el;
+    if(!rasc || !sujo) rasc = doCfg(DB.cfg());
+    desenhar();
+    ligar();
+  }
+  return {montar};
+})();
+
 /* ============================ Configurações ============================ */
 const Conf = (() => {
+  let aba = 'geral';             /* aba aberta: salvar nao pode jogar o usuario de volta para Geral */
   function render(host){
     const cfg = DB.cfg();
     const inf = Store.info();
@@ -6914,9 +7189,9 @@ const Conf = (() => {
     host.innerHTML = `
       <div class="tabs">
         ${[['geral','Geral'],['fluxo','Fluxo e status'],['dim','Dimensões'],['aging','Aging'],['campos','Campos monitorados'],['manut','Manutenção']]
-          .map((t,i) => '<button class="tab'+(i===0?' active':'')+'" data-tab="'+t[0]+'">'+t[1]+'</button>').join('')}
+          .map(t => '<button class="tab'+(t[0]===aba?' active':'')+'" data-tab="'+t[0]+'">'+t[1]+'</button>').join('')}
       </div>
-      <div class="tabpane active" id="cp-geral">
+      <div class="tabpane" id="cp-geral">
         <div class="grid g2">
           ${card('Armazenamento','onde o banco é gravado', `
             <div class="kv"><span>Modo</span><b>${inf.mode==='fs'?'Pasta do computador (File System Access API)':inf.mode==='idb'?'Armazenamento interno do navegador':'Não configurado'}</b></div>
@@ -6950,22 +7225,7 @@ const Conf = (() => {
       </div>
 
       <div class="tabpane" id="cp-fluxo">
-        ${desc.length ? '<div class="note warn" style="margin-bottom:14px"><b>'+desc.length+' status encontrados nos dados que não estão no fluxo configurado.</b><br>'
-          + desc.map(([s,n]) => '<span class="chip" style="margin:3px 3px 0 0">'+esc(s)+' <b>'+n+'</b><button class="btn sm ghost" data-add="'+esc(s)+'">+ adicionar</button></span>').join('')
-          + '<div class="small" style="margin-top:6px">Enquanto não forem mapeados, as movimentações envolvendo esses status ficam como “não classificadas”.</div></div>' : ''}
-        ${card('Fluxo de tratamento','a ordem define avanço, retorno e movimentação lateral', `
-          <div class="tbl-wrap" style="max-height:460px"><table class="tbl"><thead><tr><th style="width:90px">Ordem</th><th>Status</th><th style="width:130px">Etapa</th><th style="width:110px">Final?</th><th style="width:60px"></th></tr></thead>
-          <tbody id="fluxoBody">${cfg.fluxo.map((f,i) => `<tr>
-            <td><input type="number" min="1" value="${f.ordem}" data-f="ordem" data-i="${i}" style="width:70px"></td>
-            <td><input type="text" value="${esc(f.status)}" data-f="status" data-i="${i}"></td>
-            <td class="small muted">${esc(Flow.etapa(f.ordem))}</td>
-            <td><label class="ms-opt"><input type="checkbox" data-f="final" data-i="${i}" ${cfg.statusFinais.indexOf(f.status)>=0?'checked':''}><span class="small">encerrada</span></label></td>
-            <td><button class="btn sm ghost" data-del="${i}">✕</button></td></tr>`).join('')}</tbody></table></div>
-          <div class="hstack" style="margin-top:12px"><button class="btn" id="fAdd">+ Adicionar status</button>
-            <button class="btn primary" id="fSalvar">Salvar fluxo</button>
-            <button class="btn ghost" id="fReset">Restaurar fluxo padrão</button></div>
-          <div class="note small" style="margin-top:12px">Status com a <b>mesma ordem</b> representam caminhos paralelos: a troca entre eles é classificada como <b>movimentação lateral</b>.
-          Alterar o fluxo <b>não apaga</b> o histórico já registrado; as classificações passam a valer para as próximas importações.</div>`)}
+        ${card('Etapas do fluxo','arraste cada status para a etapa a que ele pertence', '<div id="flxEditor"></div>')}
         <div style="margin-top:14px">${card('Reconstrução do histórico pelas colunas datadas',
           'colunas do export que registram a passagem por etapas anteriores', `
           <label class="ms-opt" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;display:inline-flex">
@@ -7070,7 +7330,9 @@ const Conf = (() => {
       $$('.tabpane', host).forEach(x => x.classList.remove('active'));
       t.classList.add('active');
       $('#cp-'+t.dataset.tab, host).classList.add('active');
+      aba = t.dataset.tab;
     });
+    { const pane = $('#cp-'+aba, host) || $('#cp-geral', host); pane.classList.add('active'); }
     const salvarCfg = async (msg) => {
       try{ await DB.save(['config']); Flow.build(cfg); Filters.invalidateFacets(); UI.refresh(); Util.toast(msg||'Configuração salva.','ok'); }
       catch(e){ Util.toast(e.message,'err','Configuração'); }
@@ -7090,41 +7352,9 @@ const Conf = (() => {
       UI.tema(g('pTema').value);
       salvarCfg('Preferências salvas.');
     };
-    /* fluxo */
-    $$('[data-add]', host).forEach(b => b.onclick = () => {
-      const s = b.dataset.add;
-      const ordens = cfg.fluxo.map(f => f.ordem);
-      cfg.fluxo.push({ordem: Math.max.apply(null, ordens.concat([0]))||1, status:s});
-      salvarCfg('Status "'+s+'" adicionado ao fluxo. Ajuste a ordem se necessário.').then(() => UI.render('config'));
-    });
-    const bodyF = $('#fluxoBody', host);
-    if(bodyF){
-      $$('[data-del]', bodyF).forEach(b => b.onclick = () => { b.closest('tr').remove(); });
-      g('fAdd').onclick = () => {
-        const tr = document.createElement('tr');
-        const i = $$('tr', bodyF).length;
-        tr.innerHTML = `<td><input type="number" min="1" value="1" data-f="ordem" data-i="${i}" style="width:70px"></td>
-          <td><input type="text" value="" data-f="status" data-i="${i}" placeholder="Nome exato do status"></td>
-          <td class="small muted">—</td><td><label class="ms-opt"><input type="checkbox" data-f="final" data-i="${i}"><span class="small">encerrada</span></label></td>
-          <td><button class="btn sm ghost">✕</button></td>`;
-        bodyF.appendChild(tr);
-        $('button', tr).onclick = () => tr.remove();
-      };
-      g('fSalvar').onclick = () => {
-        const novo = [], finais = [];
-        $$('tr', bodyF).forEach(tr => {
-          const o = $('[data-f=ordem]', tr), s = $('[data-f=status]', tr), f = $('[data-f=final]', tr);
-          const status = s.value.trim();
-          if(!status) return;
-          novo.push({ordem: Math.max(1, +o.value||1), status});
-          if(f.checked) finais.push(status);
-        });
-        if(!novo.length){ Util.toast('O fluxo precisa de ao menos um status.','warn'); return; }
-        cfg.fluxo = novo.sort((a,b) => a.ordem-b.ordem || Util.cmp(a.status,b.status));
-        cfg.statusFinais = finais;
-        recalcularFechadas();
-        salvarCfg('Fluxo salvo com '+novo.length+' status.').then(() => UI.render('config'));
-      };
+    /* fluxo: editor visual de etapas */
+    if($('#flxEditor', host)) EditorFluxo.montar($('#flxEditor', host));
+    {
       const cbR = g('pRecon'), cbF = g('pFotoConteudo');
       if(cbR) cbR.onchange = e => {
         cfg.reconstruirHistorico = e.target.checked;
@@ -7135,13 +7365,6 @@ const Conf = (() => {
       if(cbF) cbF.onchange = e => {
         cfg.dataFotoDoConteudo = e.target.checked;
         salvarCfg(e.target.checked ? 'Data da foto será deduzida do conteúdo do export.' : 'Data da foto voltará a vir do arquivo.');
-      };
-      g('fReset').onclick = async () => {
-        if(!await UI.confirmar('Restaurar fluxo padrão','O fluxo voltará à configuração original de 22 status. O histórico é preservado.','Restaurar')) return;
-        cfg.fluxo = Util.clone(Cfg.FLUXO_PADRAO);
-        cfg.statusFinais = Cfg.PADRAO.statusFinais.slice();
-        recalcularFechadas();
-        salvarCfg('Fluxo padrão restaurado.').then(() => UI.render('config'));
       };
     }
     /* aging */

@@ -102,6 +102,11 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
     comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
   - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
     e cada bigrama vira uma opção de filtro e um grupo próprio.
+- **Etapas editáveis na tela** (*Configurações → Fluxo e status*): cada etapa é uma coluna e
+  cada status um cartão; arrastar o cartão (ou escolher no seletor) muda a etapa dele, e as
+  etapas podem ser renomeadas, reordenadas, criadas e removidas. Status encontrados nos dados
+  e ainda fora do fluxo aparecem em *Sem etapa*. Ao salvar, todo o histórico é reclassificado
+  (avanço, retorno, lateral) com as novas etapas.
 - **Tipo de NCR** (CG, ESC, UFEM) é um recorte lido do próprio número da NCR
   (`NCR-ICN-ESC-14-0195-2024` → ESC), sem depender de coluna do Excel.
 - **Texto de cada movimento**: o extrator também lê as *Ações e Decisões* (Ação 1.2,
