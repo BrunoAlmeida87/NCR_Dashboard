@@ -5022,6 +5022,44 @@ function semDados(msg){
     <div>${esc(msg||'Nenhum dado disponível')}</div></div>`;
 }
 
+/* ============================ Lista de NCRs em janela ============================
+   Clicar numa barra ou num numero de um grafico abre as NCRs daquele pedaco
+   numa janela, sem mexer nos filtros da tela (antes o clique aplicava o
+   filtro e levava a tabela de NCRs, e o filtro ficava ativo ao voltar).
+   Uma NCR aberta a partir da lista tem "Voltar a lista". */
+const ListaNcrs = (() => {
+  function abrir(titulo, sub, recs){
+    const campoResp = DB.campos().find(c => /especialista 2 1|responsavel|especialista ta|autor/.test(Util.norm(c)));
+    const linhas = recs.map(n => ({n, m:Metrics.derive(n)}))
+      .sort((a, b) => (b.m.diasMov || 0) - (a.m.diasMov || 0) || Util.cmp(a.n.id, b.n.id));
+    const mostrar = () => {
+      UI.modal({title: esc(titulo), sub: (sub ? esc(sub) + ' · ' : '') + Util.fNum(linhas.length) + ' NCR(s)',
+        body: !linhas.length ? semDados('Nenhuma NCR') : '<div class="tbl-wrap" style="max-height:64vh"><table class="tbl"><thead><tr>'
+          + '<th>NCR</th><th>Status</th><th>Etapa</th><th class="num">Sem movimento</th><th class="num">No status</th><th class="num">Idade</th>'
+          + '<th>Responsável</th></tr></thead><tbody>'
+          + linhas.map(x => `<tr class="clickable" data-k="${esc(x.n.key)}"><td><b>${esc(x.n.id)}</b></td>
+              <td>${badgeStatus(x.n)}</td><td class="small">${esc(Flow.etapa(x.n.ordem))}</td>
+              <td class="num">${x.m.diasMov == null ? '—' : x.m.diasMov + ' d'}</td>
+              <td class="num">${x.m.diasStatus == null ? '—' : x.m.diasStatus + ' d'}</td>
+              <td class="num">${x.m.idade == null ? '—' : x.m.idade + ' d'}</td>
+              <td class="small">${esc(campoResp ? Util.strVal(x.n.campos[campoResp]) : '—')}</td></tr>`).join('')
+          + '</tbody></table></div><div class="small muted" style="margin-top:8px">Clique numa NCR para abrir o detalhe. '
+          + 'Esta lista não altera os filtros da tela.</div>',
+        footer: '<button class="btn" id="lnCsv">Exportar CSV</button><button class="btn" data-close>Fechar</button>'});
+      $$('#modalBody tr[data-k]').forEach(tr => tr.onclick = () => Detalhe.abrir(tr.dataset.k, {voltar: mostrar}));
+      const b = $('#lnCsv');
+      if(b) b.onclick = () => Util.download('ncrs_' + Util.stamp() + '.csv', Util.toCSV(
+        [['NCR','Status','Etapa','Sem movimento (d)','No status (d)','Idade (d)','Responsável']].concat(
+          linhas.map(x => [x.n.id, x.n.status || '', Flow.etapa(x.n.ordem), x.m.diasMov, x.m.diasStatus, x.m.idade,
+                           campoResp ? Util.strVal(x.n.campos[campoResp]) : '']))), 'text/csv;charset=utf-8');
+    };
+    mostrar();
+  }
+  const valor = v => Util.strVal(v) || '(vazio)';
+  const temProduto = (n, prod) => DB.produtosDe(n.key).some(p => p.ativo !== false && p.produto === prod);
+  return {abrir, valor, temProduto};
+})();
+
 /* ============================ Dashboard ============================ */
 const Dash = (() => {
   function render(host){
@@ -5071,18 +5109,20 @@ const Dash = (() => {
       data: etapas.map(k => ({label: k==='null'?'Fora do fluxo':Flow.etapa(+k), value:porOrdem[k], key:k,
         color: k==='null' ? 'var(--muted)' : Charts.SERIES[(+k-1)%8]})),
       height:230, barW:52,
-      onClick: k => { Filters.state.etapas = [k]; Filters.invalidate(); UI.ir('ncrs'); }
+      onClick: k => ListaNcrs.abrir('Etapa: ' + (k === 'null' ? 'Fora do fluxo' : Flow.etapa(+k)), 'no filtro atual',
+        list.filter(n => String(n.ordem == null ? 'null' : n.ordem) === String(k)))
     });
     Charts.donut($('#chSit'), {
       data:[{label:'Abertas', value:r.abertas, color:'var(--s1)', key:'abertas'},
             {label:'Fechadas', value:r.fechadas, color:'var(--good)', key:'fechadas'}],
       centerValue: r.pctFechadas+'%', centerLabel:'fechadas', height:190,
-      onClick: k => { Filters.state.situacao = k; Filters.invalidate(); UI.ir('ncrs'); }
+      onClick: k => ListaNcrs.abrir(k === 'abertas' ? 'NCRs abertas' : 'NCRs fechadas', 'no filtro atual',
+        list.filter(n => k === 'abertas' ? !n.fechada : n.fechada))
     });
     Charts.hbar($('#chStatus'), {
       data: Metrics.contar(list, n => n.status, 14), limit:14, mono:false,
       colorFn: d => { const o = Flow.ordemDe(d.label); return o == null ? 'var(--muted)' : Charts.SERIES[(o-1)%8]; },
-      onClick: k => { Filters.state.campos = {}; Filters.state.statusRapido = k; Filters.invalidate(); UI.ir('ncrs'); }
+      onClick: k => ListaNcrs.abrir('Status: ' + k, 'no filtro atual', list.filter(n => ListaNcrs.valor(n.status) === k))
     });
     Charts.line($('#chMes'), {categories: serie.categories, series:[{name:'NCRs criadas', values: serie.values, color:'var(--s1)'}], height:230});
     const fx = cfg.agingFaixas.map(f => f.lbl);
@@ -5091,14 +5131,15 @@ const Dash = (() => {
     Charts.column($('#chAging'), {
       data: fx.map((f,i) => ({label:f, value:cA[f]||0, key:f, color:corFaixa[Math.min(i,corFaixa.length-1)]})),
       height:220, barW:40,
-      onClick: k => { Filters.state.aging = [k]; Filters.state.situacao = 'abertas'; Filters.invalidate(); UI.ir('ncrs'); }
+      onClick: k => ListaNcrs.abrir('Abertas sem movimento · ' + k, 'no filtro atual',
+        list.filter(n => !n.fechada && Metrics.derive(n).faixa === k))
     });
     [0,1].forEach(i => {
       const campo = dimCampo(i);
       const el = $('#chDim'+i);
       if(!campo || !el) return;
       Charts.hbar(el, {data: Metrics.contar(list, n => n.campos[campo], 10), limit:10, mono:true,
-        onClick: k => { Filters.state.campos[campo] = [k]; Filters.invalidate(); UI.ir('ncrs'); }});
+        onClick: k => ListaNcrs.abrir(campo + ': ' + k, 'no filtro atual', list.filter(n => ListaNcrs.valor(n.campos[campo]) === k))});
     });
     /* recortes: um grafico por dimensao reconhecida. Bigramas e multivalorado,
        entao a soma das barras passa do total de NCRs — a dica no cabecalho diz
@@ -5112,13 +5153,14 @@ const Dash = (() => {
       const dados = Array.from(cont.entries()).map(([label,value]) => ({label, value, key:label}))
         .sort((a,b) => b.value - a.value || Util.cmp(a.label, b.label)).slice(0,14);
       Charts.hbar(el, {data:dados, limit:14, mono:true, emptyMsg:'Sem valores nesta coluna',
-        onClick: k => { Filters.state.dims[d.id] = [k]; Filters.invalidate(); UI.ir('ncrs'); }});
+        onClick: k => ListaNcrs.abrir(d.rot + ': ' + k, 'no filtro atual', list.filter(n => Dim.tokensDe(n, d).indexOf(k) >= 0))});
     });
     const respCampo = campoResponsavel();
     Charts.hbar($('#chResp'), {
       data: Metrics.contar(list.filter(n => !n.fechada), n => respCampo ? n.campos[respCampo] : '(sem responsável)', 12),
       limit:12, mono:true,
-      onClick: k => { if(respCampo){ Filters.state.campos[respCampo] = [k]; Filters.state.situacao = 'abertas'; Filters.invalidate(); UI.ir('ncrs'); } }
+      onClick: k => ListaNcrs.abrir('Responsável: ' + k, 'NCRs abertas no filtro atual',
+        list.filter(n => !n.fechada && (respCampo ? ListaNcrs.valor(n.campos[respCampo]) : '(sem responsável)') === k))
     });
     const keys = new Set(list.map(n => n.key));
     const prodCount = new Map();
@@ -5130,7 +5172,7 @@ const Dash = (() => {
     const topProd = Array.from(prodCount.entries()).map(([label,value]) => ({label, value, key:label}))
       .sort((a,b) => b.value-a.value).slice(0,12);
     Charts.hbar($('#chProd'), {data:topProd, limit:12, mono:true, emptyMsg:'Nenhum produto vinculado',
-      onClick: k => { Filters.state.produto = k; Filters.invalidate(); UI.ir('ncrs'); }});
+      onClick: k => ListaNcrs.abrir('Produto: ' + k, 'no filtro atual', list.filter(n => ListaNcrs.temProduto(n, k)))});
 
     /* --- listas --- */
     const evs = DB.all().historico.filter(e => Flow.isFluxoEvt(e) && e.cls !== 'INICIAL' && keys.has(e.ncr)).slice(-12).reverse();
@@ -5156,12 +5198,13 @@ const Dash = (() => {
       : semDados('Nenhum fechamento registrado');
     ligarLinks(host);
     $$('[data-tile]', host).forEach(t => t.onclick = () => {
-      const k = t.dataset.tile;
-      if(k === 'abertas'){ Filters.state.situacao = 'abertas'; }
-      else if(k === 'fechadas'){ Filters.state.situacao = 'fechadas'; }
-      else if(k === 'semMov'){ Filters.state.situacao = 'abertas'; Filters.state.semMovDias = DB.cfg().semMovimentacaoDias; }
-      else if(k === 'retorno'){ Filters.state.comRetorno = true; }
-      Filters.invalidate(); UI.ir('ncrs');
+      const k = t.dataset.tile, lim = DB.cfg().semMovimentacaoDias || 30;
+      if(k === 'abertas') ListaNcrs.abrir('NCRs abertas', 'no filtro atual', list.filter(n => !n.fechada));
+      else if(k === 'fechadas') ListaNcrs.abrir('NCRs fechadas', 'no filtro atual', list.filter(n => n.fechada));
+      else if(k === 'semMov') ListaNcrs.abrir('Abertas sem movimento há ≥ ' + lim + ' dias', 'no filtro atual',
+        list.filter(n => { if(n.fechada) return false; const dm = Util.days(n.ultimaAlteracao || n.primeiraVez); return dm != null && dm >= lim; }));
+      else if(k === 'retorno') ListaNcrs.abrir('NCRs com retorno', 'no filtro atual', list.filter(n => (n.mov && n.mov.retornos) > 0));
+      else ListaNcrs.abrir('NCRs', 'no filtro atual', list);
     });
   }
   /* uma linha de cards, so com as dimensoes que existem no export lido */
@@ -5737,7 +5780,8 @@ const Detalhe = (() => {
     });
   }
 
-  function abrir(key){
+  /* opts.voltar: quem abriu o detalhe a partir de uma lista pode voltar a ela */
+  function abrir(key, opts){
     const rec = DB.all().ncrs[key];
     if(!rec){ Util.toast('NCR não encontrada no banco.','err'); return; }
     const m = Metrics.derive(rec);
@@ -5809,7 +5853,8 @@ const Detalhe = (() => {
          + (rec.sistema ? ' <span class="badge new" title="trajetória com as datas exatas da aba Histórico do NCR Integrada">histórico do sistema · capturado em '+Util.fDate(rec.sistema.capturadoEm)+'</span>' : '')
          + (rec.reconstruida ? ' <span class="badge new" title="trajetória lida das colunas datadas do próprio export, e não apenas de importações sucessivas">trajetória reconstruída de '+rec.reconstruida+' marcos</span>' : ''),
       body,
-      footer: '<button class="btn" id="dtExp">Exportar NCR (JSON)</button><button class="btn" data-close>Fechar</button>'
+      footer: (opts && opts.voltar ? '<button class="btn" id="dtVoltar" style="margin-right:auto">← Voltar à lista</button>' : '')
+        + '<button class="btn" id="dtExp">Exportar NCR (JSON)</button><button class="btn" data-close>Fechar</button>'
     });
     function desenharFluxo(){
       const host = $('#fxHost');
@@ -5839,6 +5884,7 @@ const Detalhe = (() => {
       t.classList.add('active');
       $('#tp-'+t.dataset.tab).classList.add('active');
     });
+    if(opts && opts.voltar && $('#dtVoltar')) $('#dtVoltar').onclick = () => opts.voltar();
     $('#dtExp').onclick = () => Util.download('NCR_'+rec.id.replace(/[^\w-]/g,'_')+'.json',
       JSON.stringify({ncr:rec, produtos:prods, historico:ev}, null, 2));
   }
@@ -5967,10 +6013,10 @@ const Prod = (() => {
         <button class="btn sm" id="pNext" ${st.pagina>=totalPag?'disabled':''}>Próxima ›</button></div>`;
     host.appendChild(box);
     Charts.hbar($('#chP1'), {data: top.map(p => ({label:p.produto, value:p.ncrs, key:p.produto})), mono:true,
-      onClick: k => { Filters.state.produto = k; Filters.invalidate(); UI.ir('ncrs'); }});
+      onClick: k => ListaNcrs.abrir('Produto: ' + k, 'no filtro atual', Filters.aplicar().filter(n => ListaNcrs.temProduto(n, k)))});
     Charts.hbar($('#chP2'), {data: topAbertas.map(p => ({label:p.produto, value:p.abertas, key:p.produto})),
       colorFn: () => 'var(--s2)', emptyMsg:'Nenhuma NCR aberta com produto vinculado',
-      onClick: k => { Filters.state.produto = k; Filters.state.situacao = 'abertas'; Filters.invalidate(); UI.ir('ncrs'); }});
+      onClick: k => ListaNcrs.abrir('Produto: ' + k, 'NCRs abertas no filtro atual', Filters.aplicar().filter(n => !n.fechada && ListaNcrs.temProduto(n, k)))});
     ligarLinks(box);
     $('#pBusca', box).oninput = Util.debounce(e => { st.busca = e.target.value.trim(); st.pagina = 1; UI.render('produtos'); }, 300);
     $$('th[data-s]', box).forEach(th => th.onclick = () => {
@@ -5990,82 +6036,142 @@ const Prod = (() => {
 
 /* ============================ Aging ============================ */
 const Aging = (() => {
+  /* qual conjunto a tela mede; e local desta tela e nao mexe no filtro global */
+  const st = {situ:'abertas'};
+  const SITU = [['abertas','Abertas'],['fechadas','Fechadas'],['todas','Todas (geral)']];
+
+  /* Aberta: conta ate hoje. Fechada: "sem movimento" contado ate hoje nao diz
+     nada (so mede ha quanto tempo ela fechou); mede-se quanto tempo ficou
+     parada no ultimo status antes do fechamento, e a idade ate fechar. */
+  function medidas(n){
+    if(!n.fechada)
+      return {n, dMov: Util.days(n.ultimaAlteracao||n.primeiraVez), dSt: Util.days(n.statusDesde||n.primeiraVez),
+              idade: Util.days(n.criadoEm||n.primeiraVez), stRef: n.status || '—', fim:null};
+    const ev = DB.eventos(n.key).filter(Flow.isFluxoEvt);
+    let iF = -1;
+    for(let i = ev.length - 1; i >= 0; i--) if(Flow.isFinal(ev[i].para)){ iF = i; break; }
+    const fim = iF >= 0 ? ev[iF].data : (n.statusDesde || n.ultimaAlteracao || n.primeiraVez);
+    const antes = iF > 0 ? ev[iF-1] : null;
+    const ini = antes ? antes.data : (n.criadoEm || n.primeiraVez);
+    const d = Util.days(ini, fim);
+    return {n, dMov: d, dSt: d, idade: Util.days(n.criadoEm||n.primeiraVez, fim),
+            stRef: antes ? (antes.para || '—') : (n.status || '—'), fim};
+  }
+
+  /* lista das NCRs de uma barra numa janela: nao altera filtro nenhum e,
+     ao abrir uma NCR, o detalhe tem "voltar a lista" */
+  function lista(titulo, sub, itens, campoResp){
+    const ord = itens.slice().sort((a,b) => (b.dMov||0) - (a.dMov||0));
+    const abrirLista = () => {
+      UI.modal({title: esc(titulo), sub: esc(sub) + ' · ' + Util.fNum(ord.length) + ' NCR(s)',
+        body: !ord.length ? semDados('Nenhuma NCR') : '<div class="tbl-wrap" style="max-height:64vh"><table class="tbl"><thead><tr>'
+          + '<th>NCR</th><th>Status</th><th>Etapa</th><th class="num">Sem movimento</th><th class="num">No status</th><th class="num">Idade</th>'
+          + '<th>Responsável</th></tr></thead><tbody>'
+          + ord.map(x => `<tr class="clickable" data-k="${esc(x.n.key)}"><td><b>${esc(x.n.id)}</b></td><td>${esc(x.n.status||'—')}</td>
+              <td class="small">${esc(Flow.etapa(x.n.ordem))}</td><td class="num">${x.dMov==null?'—':x.dMov+' d'}</td>
+              <td class="num">${x.dSt==null?'—':x.dSt+' d'}</td><td class="num">${x.idade==null?'—':x.idade+' d'}</td>
+              <td class="small">${esc(campoResp ? Util.strVal(x.n.campos[campoResp]) : '—')}</td></tr>`).join('')
+          + '</tbody></table></div><div class="small muted" style="margin-top:8px">Clique numa NCR para abrir o detalhe. '
+          + 'Esta lista não altera os filtros da tela.</div>',
+        footer: '<button class="btn" id="agCsv">Exportar CSV</button><button class="btn" data-close>Fechar</button>'});
+      $$('#modalBody tr[data-k]').forEach(tr => tr.onclick = () => Detalhe.abrir(tr.dataset.k, {voltar: abrirLista, rotulo: titulo}));
+      const b = $('#agCsv'); if(b) b.onclick = () => Util.download('aging_' + Util.stamp() + '.csv', Util.toCSV(
+        [['NCR','Status','Etapa','Sem movimento (d)','No status (d)','Idade (d)','Responsável']].concat(
+          ord.map(x => [x.n.id, x.n.status||'', Flow.etapa(x.n.ordem), x.dMov, x.dSt, x.idade, campoResp ? Util.strVal(x.n.campos[campoResp]) : '']))),
+        'text/csv;charset=utf-8');
+    };
+    abrirLista();
+  }
+
   function render(host){
     if(!DB.contagem().ncrs){ host.innerHTML = semDados('Importe os arquivos Excel para analisar o aging.'); return; }
     host.innerHTML = '';
     UI.barraFiltros(host, {maxFacetas:4});
     const cfg = DB.cfg();
     const list = Filters.aplicar();
-    const abertas = list.filter(n => !n.fechada);
-    const comD = abertas.map(n => ({n, dMov: Util.days(n.ultimaAlteracao||n.primeiraVez), dSt: Util.days(n.statusDesde||n.primeiraVez), idade: Util.days(n.criadoEm||n.primeiraVez)}))
-                        .filter(x => x.dMov != null);
+    const conj = st.situ === 'abertas' ? list.filter(n => !n.fechada) : st.situ === 'fechadas' ? list.filter(n => n.fechada) : list;
+    const comD = conj.map(medidas).filter(x => x.dMov != null);
+    const fech = st.situ === 'fechadas', geral = st.situ === 'todas';
     const media = comD.length ? comD.reduce((s,x) => s+x.dMov,0)/comD.length : null;
     const max = comD.length ? Math.max.apply(null, comD.map(x => x.dMov)) : null;
-    const crit = comD.filter(x => x.dMov > 60).length;
+    const critL = comD.filter(x => x.dMov > 60);
     const faixas = cfg.agingFaixas.map(f => f.lbl);
     const cor = ['var(--good)','var(--s3)','var(--warning)','var(--serious)','var(--critical)'];
-    const cMov = {}, cSt = {};
-    comD.forEach(x => { const a = Metrics.faixa(x.dMov); cMov[a] = (cMov[a]||0)+1;
-                        const b = Metrics.faixa(x.dSt); cSt[b] = (cSt[b]||0)+1; });
-    /* aging medio por status */
+    const gMov = {}, gSt = {};
+    comD.forEach(x => {
+      const a = Metrics.faixa(x.dMov); (gMov[a] = gMov[a] || []).push(x);
+      const b = Metrics.faixa(fech ? x.idade : x.dSt); (gSt[b] = gSt[b] || []).push(x);
+    });
+    /* aging medio por status (nas fechadas: o status em que ficou parada antes de fechar) */
     const porStatus = new Map();
     comD.forEach(x => {
-      const s = x.n.status || '—';
-      if(!porStatus.has(s)) porStatus.set(s, {soma:0, n:0, max:0});
+      const s = x.stRef;
+      if(!porStatus.has(s)) porStatus.set(s, {soma:0, n:0, itens:[]});
       const a = porStatus.get(s);
-      a.soma += x.dSt; a.n++; if(x.dSt > a.max) a.max = x.dSt;
+      a.soma += x.dSt || 0; a.n++; a.itens.push(x);
     });
-    const agingStatus = Array.from(porStatus.entries()).map(([s,a]) => ({label:s, value:Math.round(a.soma/a.n), n:a.n, max:a.max, key:s}))
+    const agingStatus = Array.from(porStatus.entries()).map(([s,a]) => ({label:s, value:Math.round(a.soma/a.n), n:a.n, key:s}))
       .sort((a,b) => b.value-a.value).slice(0,14);
-    /* responsaveis com NCRs antigas */
     const campoResp = DB.campos().find(c => /especialista 2 1|responsavel|especialista ta|autor/.test(Util.norm(c)));
     const porResp = new Map();
     if(campoResp) comD.filter(x => x.dMov >= (cfg.semMovimentacaoDias||30)).forEach(x => {
       const r = Util.strVal(x.n.campos[campoResp]) || '(sem responsável)';
-      porResp.set(r, (porResp.get(r)||0)+1);
+      if(!porResp.has(r)) porResp.set(r, []);
+      porResp.get(r).push(x);
     });
-    const respData = Array.from(porResp.entries()).map(([label,value]) => ({label, value, key:label}))
+    const respData = Array.from(porResp.entries()).map(([label,it]) => ({label, value:it.length, key:label}))
       .sort((a,b) => b.value-a.value).slice(0,12);
     const antigas = comD.slice().sort((a,b) => b.dMov-a.dMov).slice(0,60);
+
+    const nome = fech ? 'NCRs fechadas' : geral ? 'NCRs (abertas e fechadas)' : 'NCRs abertas';
+    const tMov = fech ? 'dias parada antes do fechamento' : geral ? 'dias sem movimentação (fechadas: parada antes de fechar)' : 'dias sem movimentação';
+    const tSt = fech ? 'tempo total aberta (criação → fechamento)' : geral ? 'dias no status (fechadas: último status antes de fechar)' : 'dias no status atual';
     const box = document.createElement('div');
     box.innerHTML = `
+      <div class="hstack" style="gap:6px;margin-bottom:12px;align-items:center">
+        <span class="small muted">Ver:</span>
+        ${SITU.map(([v,l]) => `<button class="btn sm${st.situ===v?' primary':''}" data-situ="${v}">${l}</button>`).join('')}
+        <span class="small muted" style="margin-left:8px">${fech ? 'Nas fechadas, o aging é medido até o fechamento.' : geral ? 'Abertas contadas até hoje; fechadas, até o fechamento.' : ''}</span>
+      </div>
       <div class="grid g4" style="margin-bottom:14px">
-        ${tileHtml('NCRs abertas', Util.fNum(abertas.length), 'no filtro atual', 'var(--s1)')}
-        ${tileHtml('Média sem movimento', media==null?'—':Util.fDec(media,0)+' d', 'entre as abertas', 'var(--s4)')}
-        ${tileHtml('Maior aging', max==null?'—':max+' d', 'NCR mais parada', 'var(--serious)')}
-        ${tileHtml('Acima de 60 dias', Util.fNum(crit), 'atenção prioritária', 'var(--critical)', 'crit')}
+        ${tileHtml(nome, Util.fNum(conj.length), 'no filtro atual', 'var(--s1)')}
+        ${tileHtml(fech ? 'Média parada antes de fechar' : 'Média sem movimento', media==null?'—':Util.fDec(media,0)+' d', fech ? 'entre as fechadas' : geral ? 'no conjunto' : 'entre as abertas', 'var(--s4)')}
+        ${tileHtml('Maior aging', max==null?'—':max+' d', fech ? 'maior parada antes de fechar' : 'NCR mais parada', 'var(--serious)')}
+        ${tileHtml('Acima de 60 dias', Util.fNum(critL.length), 'clique para ver a lista', 'var(--critical)', 'crit')}
       </div>
       <div class="grid g2" style="margin-bottom:14px">
-        ${card('Distribuição por faixa — dias sem movimentação','clique para filtrar','<div class="chart-host" id="chAg1"></div>')}
-        ${card('Distribuição por faixa — dias no status atual','','<div class="chart-host" id="chAg2"></div>')}
+        ${card('Distribuição por faixa — ' + tMov,'clique numa barra para ver as NCRs','<div class="chart-host" id="chAg1"></div>')}
+        ${card('Distribuição por faixa — ' + tSt,'clique numa barra para ver as NCRs','<div class="chart-host" id="chAg2"></div>')}
       </div>
       <div class="grid g2" style="margin-bottom:14px">
-        ${card('Aging médio por status','dias no status · top 14','<div class="chart-host" id="chAg3"></div>')}
+        ${card(fech ? 'Aging médio por status antes do fechamento' : 'Aging médio por status','dias no status · top 14','<div class="chart-host" id="chAg3"></div>')}
         ${card('Responsáveis com NCRs paradas','≥ '+(cfg.semMovimentacaoDias||30)+' dias · top 12','<div class="chart-host" id="chAg4"></div>')}
       </div>
-      ${card('NCRs mais antigas sem movimentação','top 60','<div class="tbl-wrap" style="max-height:520px"><table class="tbl"><thead><tr>'
+      ${card(fech ? 'NCRs que ficaram mais tempo paradas antes de fechar' : 'NCRs mais antigas sem movimentação','top 60','<div class="tbl-wrap" style="max-height:520px"><table class="tbl"><thead><tr>'
         + '<th>NCR</th><th>Status</th><th>Etapa</th><th class="num">Sem movimento</th><th class="num">No status</th><th class="num">Idade</th><th>Faixa</th><th>Responsável</th>'
         + '</tr></thead><tbody>' + antigas.map(x => {
             const c = x.dMov >= 60 ? 'var(--critical-ink)' : x.dMov >= 30 ? 'var(--warning-ink)' : 'inherit';
             return `<tr class="clickable" data-key="${esc(x.n.key)}"><td>${ncrLink(x.n.id,x.n.key)}</td>
-              <td>${esc(x.n.status||'—')}</td><td class="small">${esc(Flow.etapa(x.n.ordem))}</td>
+              <td>${esc(x.n.status||'—')}${x.fim ? '<div class="small muted">fechada em '+Util.fDate(x.fim)+'</div>' : ''}</td><td class="small">${esc(Flow.etapa(x.n.ordem))}</td>
               <td class="num" style="color:${c};font-weight:600">${x.dMov} d</td><td class="num">${x.dSt} d</td>
               <td class="num">${x.idade==null?'—':x.idade+' d'}</td><td><span class="badge ord">${esc(Metrics.faixa(x.dMov))}</span></td>
               <td class="small">${esc(campoResp?Util.strVal(x.n.campos[campoResp]):'—')}</td></tr>`;
           }).join('') + '</tbody></table></div>')}`;
     host.appendChild(box);
-    Charts.column($('#chAg1'), {data: faixas.map((f,i) => ({label:f, value:cMov[f]||0, key:f, color:cor[Math.min(i,4)]})), height:230, barW:44,
-      onClick: k => { Filters.state.aging = [k]; Filters.state.situacao = 'abertas'; Filters.invalidate(); UI.ir('ncrs'); }});
-    Charts.column($('#chAg2'), {data: faixas.map((f,i) => ({label:f, value:cSt[f]||0, key:f, color:cor[Math.min(i,4)]})), height:230, barW:44});
+    $$('[data-situ]', box).forEach(b => b.onclick = () => { st.situ = b.dataset.situ; UI.render('aging'); });
+    Charts.column($('#chAg1'), {data: faixas.map((f,i) => ({label:f, value:(gMov[f]||[]).length, key:f, color:cor[Math.min(i,4)]})), height:230, barW:44,
+      onClick: k => lista(nome + ' · ' + k, tMov, gMov[k] || [], campoResp)});
+    Charts.column($('#chAg2'), {data: faixas.map((f,i) => ({label:f, value:(gSt[f]||[]).length, key:f, color:cor[Math.min(i,4)]})), height:230, barW:44,
+      onClick: k => lista(nome + ' · ' + k, tSt, gSt[k] || [], campoResp)});
     Charts.hbar($('#chAg3'), {data: agingStatus, unit:'dias em média', suffix:' d',
       colorFn: d => { const o = Flow.ordemDe(d.label); return o == null ? 'var(--muted)' : Charts.SERIES[(o-1)%8]; },
-      onClick: k => { Filters.state.statusRapido = k; Filters.invalidate(); UI.ir('ncrs'); }});
+      onClick: k => lista(nome + ' · ' + k, fech ? 'último status antes de fechar' : 'status', (porStatus.get(k) || {itens:[]}).itens, campoResp)});
     Charts.hbar($('#chAg4'), {data: respData, mono:true, emptyMsg:'Nenhuma NCR parada no filtro atual',
-      onClick: k => { if(campoResp){ Filters.state.campos[campoResp] = [k]; Filters.state.situacao = 'abertas'; Filters.invalidate(); UI.ir('ncrs'); } }});
+      onClick: k => lista(nome + ' · ' + k, 'paradas há ≥ ' + (cfg.semMovimentacaoDias||30) + ' dias', porResp.get(k) || [], campoResp)});
     ligarLinks(box);
     $$('tr[data-key]', box).forEach(tr => tr.onclick = e => { if(!e.target.closest('a')) Detalhe.abrir(tr.dataset.key); });
     const t = $$('[data-tile]', box)[0];
-    if(t) t.onclick = () => { Filters.state.situacao = 'abertas'; Filters.state.semMovDias = 61; Filters.invalidate(); UI.ir('ncrs'); };
+    if(t) t.onclick = () => lista(nome + ' · acima de 60 dias', tMov, critL, campoResp);
   }
   return {render};
 })();
@@ -6157,7 +6263,8 @@ const FluxoView = (() => {
       emptyMsg:'Ainda não há etapas concluídas (necessário ao menos 2 importações com mudança de status)'});
     Charts.hbar($('#chF3'), {data: gargalos.map(t => ({label:t.status+' ('+t.emAberto+')', value:Math.round(t.mediaAbertoDias), key:t.status})),
       suffix:' d', colorFn: d => d.value >= 60 ? 'var(--critical)' : d.value >= 30 ? 'var(--warning)' : 'var(--s3)',
-      onClick: k => { Filters.state.statusRapido = String(k).replace(/\s\(\d+\)$/,''); Filters.invalidate(); UI.ir('ncrs'); }});
+      onClick: k => { const stt = String(k).replace(/\s\(\d+\)$/,'');
+        ListaNcrs.abrir('Paradas em ' + stt, 'NCRs abertas no filtro atual', Filters.aplicar().filter(n => !n.fechada && Util.strVal(n.status) === stt)); }});
     ligarLinks(box);
   }
   return {render};

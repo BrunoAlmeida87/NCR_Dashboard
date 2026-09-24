@@ -102,6 +102,11 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
     comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
   - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
     e cada bigrama vira uma opção de filtro e um grupo próprio.
+- **Aging de abertas, fechadas ou geral**: nas fechadas o aging é medido até o fechamento
+  (quanto tempo ficaram paradas antes de encerrar e a idade até fechar).
+- **Clique nos gráficos abre a lista, sem filtrar**: em Aging, Dashboard, Produtos e Análise de
+  Fluxo, clicar numa barra ou num número abre as NCRs daquele pedaço numa janela (com exportação
+  CSV). Os filtros da tela não mudam, e a NCR aberta a partir da lista tem *Voltar à lista*.
 - **Etapas editáveis na tela** (*Configurações → Fluxo e status*): cada etapa é uma coluna e
   cada status um cartão; arrastar o cartão (ou escolher no seletor) muda a etapa dele, e as
   etapas podem ser renomeadas, reordenadas, criadas e removidas. Status encontrados nos dados
