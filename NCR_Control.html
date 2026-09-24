@@ -269,6 +269,8 @@ table.tbl .ncrid{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink
 .flx-chip-ctl select{font-size:11px;padding:2px 4px;flex:1;min-width:0}
 .flx-fim{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--text-2)}
 .flx-add{width:100%;margin-top:4px;font-size:11.5px;padding:5px 7px}
+.rep-leg{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:12px;color:var(--text-2)}
+.rep-leg > span{display:inline-flex;align-items:center;gap:6px}
 /* texto longo no detalhe da NCR: abre por inteiro com um clique */
 .xp-t{font-size:11.5px;margin-left:4px;white-space:nowrap}
 #modalBody table.tbl td.corta{cursor:zoom-in}
@@ -1158,10 +1160,16 @@ if(isWorker){
         if(!textos.length && !corpo.querySelector('p')) textos.push(txt(corpo));
       }
       const texto = textos.join(' | ');
-      const m = /foi para o estado\s+(.+?)\s*$/i.exec(texto);
-      const para = m ? m[1] : null;
+      /* o estado vem so do paragrafo "foi para o estado X"; os demais (ex.: o
+         motivo de um Unfounded) sao texto a parte e nao fazem parte do nome */
+      let para = null;
+      const resto = [];
+      textos.forEach(t => {
+        const m = /foi para o estado\s+(.+?)\s*$/i.exec(t);
+        if(m && !para) para = m[1]; else resto.push(t);
+      });
       out.push({data:dataISO(dataTexto), dataTexto, usuario:txt(item.querySelector('.timeline-header')),
-                statusDe, texto, para, tipo:tipoDe(texto, para), icone:fa});
+                statusDe, texto, para, motivo: para ? resto.join('\n') : '', tipo:tipoDe(texto, para), icone:fa});
     });
     return out;
   }
@@ -2425,6 +2433,12 @@ const DB = (() => {
     d.meta = (res.ncr && res.ncr.meta) || d.meta;
     idx.carregado = true;
     reindex();
+    /* estados do historico do sistema com o motivo grudado no nome: separa e
+       refaz as trajetorias afetadas */
+    if(typeof SistemaHist !== 'undefined' && SistemaHist.limparEstados()){
+      SistemaHist.reaplicar();
+      try{ await save(['ncr','historico','sistema']); }catch(e){ console.error(e); }
+    }
     if(migrouEtapas && d.historico.length){
       reclassificarFluxo();
       try{ await save(['config','ncr','historico']); }catch(e){ console.error(e); }
@@ -3489,13 +3503,39 @@ const SistemaHist = (() => {
     return k;
   }
 
+  /* Capturas antigas juntavam os paragrafos da linha com " | " antes de ler o
+     estado, e o motivo de um Unfounded virava parte do nome
+     ("7.2 - TA Unfounded | Motivo..."). Separa o estado do texto extra. */
+  function separarEstado(p){
+    if(p == null) return [null, ''];
+    const t = String(p), i = t.indexOf(' | ');
+    return i < 0 ? [t.trim(), ''] : [t.slice(0, i).trim(), t.slice(i + 3).trim()];
+  }
+  /* corrige o que ja foi importado; devolve quantos eventos mudaram */
+  function limparEstados(){
+    let n = 0;
+    const d = DB.all();
+    for(const k in d.sistema){
+      (d.sistema[k].eventos || []).forEach(e => {
+        if(!e.para || e.para.indexOf(' | ') < 0) return;
+        const [para, extra] = separarEstado(e.para);
+        e.para = para;
+        e.motivo = [e.motivo, extra].filter(Boolean).join('\n');
+        n++;
+      });
+    }
+    return n;
+  }
+
   /* registro compacto guardado no banco: so o necessario para a trajetoria
      e para conferencia (o texto de anexos e afins fica de fora) */
   function compactar(r){
     return {numero:r.numero, sysId:r.sysId || null, url:r.url || null, capturadoEm:r.capturadoEm,
       statusAtual:r.statusAtual || null, autor:r.autor || null,
       eventos:(r.eventos || []).filter(e => e && e.data && (e.tipo === 'STATUS' || e.tipo === 'CRIACAO'))
-        .map(e => ({data:e.data, usuario:e.usuario || '', de:e.statusDe || '', para:e.para || null, tipo:e.tipo})),
+        .map(e => { const [para, extra] = separarEstado(e.para);
+          return {data:e.data, usuario:e.usuario || '', de:e.statusDe || '', para, tipo:e.tipo,
+                  motivo:[e.motivo, extra].filter(Boolean).join('\n') || undefined}; }),
       outros:(r.eventos || []).filter(e => e && e.tipo !== 'STATUS' && e.tipo !== 'CRIACAO').length,
       marcos:(r.marcos || []).filter(m => m && m.data),
       /* o que a pessoa escreveu ao avancar (Ação 1.2, Deliberação N1, Ação PCP...) */
@@ -3524,10 +3564,17 @@ const SistemaHist = (() => {
         out.push({data:e.data, de:null, para:atual, usuario:'', criacao:false});
       }
       if(n(e.para) === n(atual)) return;          /* reenvio para o mesmo estado: nao e movimento */
-      out.push({data:e.data, de:atual, para:e.para, usuario:e.usuario, deRegistrado:e.de});
+      out.push({data:e.data, de:atual, para:e.para, usuario:e.usuario, deRegistrado:e.de, motivo:e.motivo});
       atual = e.para;
     });
     ligarAcoes(out, h.acoes || []);
+    /* o motivo escrito na propria linha do historico (ex.: Unfounded) soma-se
+       ao texto da acao, quando houver */
+    out.forEach(t => {
+      if(!t.motivo) return;
+      t.texto = t.texto ? t.texto + '\n\n' + t.motivo : t.motivo;
+      if(!t.acao) t.acao = 'Motivo registrado';
+    });
     return out;
   }
   /* cada acao escrita e gravada no mesmo instante da mudanca de estado que
@@ -3585,6 +3632,7 @@ const SistemaHist = (() => {
       ultima = e.data;
     });
     if(!atual) return drop;
+    if(rec.status && String(rec.status).indexOf(' | ') >= 0) rec.status = separarEstado(rec.status)[0];
     rec.visitas = visitas;
     rec.mov = mov;
     /* o sistema e mais recente que a ultima foto do Excel: o status dele vale */
@@ -3718,7 +3766,7 @@ const SistemaHist = (() => {
     return out;
   }
   const script = () => document.getElementById('extratorSrc').textContent.trim() + '\n';
-  return {importar, aplicar, reaplicar, resumo, script, transicoes, paraRecapturar, FONTE, ROTULO};
+  return {importar, aplicar, reaplicar, resumo, script, transicoes, paraRecapturar, limparEstados, FONTE, ROTULO};
 })();
 
 /* ============================ Charts (SVG proprio, sem dependencias) ============================ */
@@ -6360,10 +6408,15 @@ const Trilhas = (() => {
       ${!excedente && N > PESADO_REPRO ? '<div class="note warn small" style="margin-top:10px">' + Util.fNum(N)
         + ' NCRs na reprodução: a animação pode ficar lenta. Filtre o recorte se precisar.</div>' : ''}
       ${Detalhe.legendaFluxo()}
-      <div class="small muted" style="margin-top:10px">Cada ponto é uma NCR, na etapa em que ela estava naquela data.
-        A cor é a do movimento que a trouxe até ali.
-        O anel destaca quem se mexeu nos 15 dias anteriores. NCRs ainda não abertas não aparecem.
-        Trajetórias reconstruídas das colunas datadas do export entram aqui como qualquer outra.</div>`;
+      <div class="rep-leg">
+        <span><svg width="14" height="14"><circle cx="7" cy="7" r="${R}" style="fill:var(--good)"/></svg>
+          <span><b>Ponto</b>: uma NCR, na etapa em que estava na data mostrada</span></span>
+        <span><svg width="18" height="18"><circle cx="9" cy="9" r="${R + 1.4}" style="fill:var(--good);stroke:var(--text);stroke-width:1.6"/></svg>
+          <span><b>Maior, com contorno</b>: chegou a essa etapa nos 15 dias anteriores à data mostrada (movimento recente)</span></span>
+        <span><span><b>Cor</b>: o tipo do movimento que a trouxe até ali (legenda acima)</span></span>
+      </div>
+      <div class="small muted" style="margin-top:6px">Todos os pontos têm o mesmo tamanho; ele só diminui quando há muitas NCRs na tela,
+        para caberem. NCRs ainda não abertas na data mostrada não aparecem.</div>`;
     host.appendChild(box);
 
     const svg = $('#repSvg', box);
