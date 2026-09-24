@@ -1905,6 +1905,7 @@ const Cfg = (() => {
     semMovimentacaoDias: 30,
     porPagina: 50,
     tema: 'light',
+    migracoes: ['etapas-2.1-5.1'],   /* ajustes de configuracao ja aplicados (rodam uma vez) */
     colunasNcr: null,
     ultimaPasta: null,
     criadoEm: null,
@@ -2375,7 +2376,7 @@ const DB = (() => {
   const campos = () => idx.campos.slice();
 
   async function load(){
-    let migrouEtapas = false;
+    let migrouEtapas = false, marcarMigracao = false;
     const files = ['configuracao','ncr','produtos','historico','arquivos_processados','importacoes','historico_sistema'];
     const res = {};
     for(const f of files){
@@ -2389,11 +2390,18 @@ const DB = (() => {
       /* 2.1 - Especialista ICN pertence a Analise Tecnica e 5.1 - DELIN a
          Deliberacao: corrige o fluxo salvo que ainda os tinha em Abertura e
          Comissionamento, e marca para reclassificar o historico */
-      (d.config.fluxo || []).forEach(f => {
-        if(!f) return;
-        if(Util.norm(f.status) === Util.norm('2.1 - Especialista ICN') && Number(f.ordem) === 1){ f.ordem = 2; migrouEtapas = true; }
-        if(Util.norm(f.status) === Util.norm('5.1 - DELIN') && Number(f.ordem) === 4){ f.ordem = 3; migrouEtapas = true; }
-      });
+      /* roda uma unica vez: depois disso a etapa de cada status e decisao do
+         usuario no editor de etapas, e nao pode ser desfeita ao abrir */
+      const feitas = Array.isArray(res.configuracao.migracoes) ? res.configuracao.migracoes : [];
+      if(feitas.indexOf('etapas-2.1-5.1') < 0){
+        (d.config.fluxo || []).forEach(f => {
+          if(!f) return;
+          if(Util.norm(f.status) === Util.norm('2.1 - Especialista ICN') && Number(f.ordem) === 1){ f.ordem = 2; migrouEtapas = true; }
+          if(Util.norm(f.status) === Util.norm('5.1 - DELIN') && Number(f.ordem) === 4){ f.ordem = 3; migrouEtapas = true; }
+        });
+        d.config.migracoes = feitas.concat(['etapas-2.1-5.1']);
+        marcarMigracao = true;
+      }
       /* recorte "Tipo de NCR" (CG, ESC, UFEM), lido do numero da NCR */
       if(Array.isArray(d.config.dimensoes) && !d.config.dimensoes.some(x => x && x.id === 'tipo')){
         const pad = Cfg.PADRAO.dimensoes.find(x => x.id === 'tipo');
@@ -2420,7 +2428,7 @@ const DB = (() => {
     if(migrouEtapas && d.historico.length){
       reclassificarFluxo();
       try{ await save(['config','ncr','historico']); }catch(e){ console.error(e); }
-    } else if(migrouEtapas){
+    } else if(migrouEtapas || marcarMigracao){
       try{ await save(['config']); }catch(e){ console.error(e); }
     }
     return contagem();
