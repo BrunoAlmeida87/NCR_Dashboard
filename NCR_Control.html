@@ -3853,7 +3853,7 @@ const Charts = (() => {
       const rows = data.slice(0, o.limit || 14);
       const bh = Math.min(22, o.barH || 18), gap = 12;
       const labelW = Math.min(Math.max(90, Math.round(W*0.32)), 260);
-      const padR = 58, padT = 6, padB = 20;
+      const padR = o.padR || 58, padT = 6, padB = 20;
       const H = padT + rows.length*(bh+gap) + padB;
       const max = niceMax(Math.max.apply(null, rows.map(r => r.value)));
       const plotW = W - labelW - padR;
@@ -3869,8 +3869,9 @@ const Charts = (() => {
         const color = r.color || (o.colorFn ? o.colorFn(r,i) : (o.mono ? 'var(--s1)' : SERIES[i % 8]));
         const lbl = r.label.length > 34 ? r.label.slice(0,32)+'…' : r.label;
         g += `<text x="${labelW-8}" y="${y+bh/2+4}" text-anchor="end" style="fill:var(--text-2);font-size:11.5px">${esc(lbl)}</text>`;
-        g += `<path d="${barH(labelW, y, w, bh, 4)}" style="fill:${color}" data-tip="${esc(tipRow(color, r.label, Util.fNum(r.value), o.unit||''))}" data-key="${esc(r.key!=null?r.key:r.label)}" data-idx="${i}"/>`;
-        g += `<text x="${labelW+w+7}" y="${y+bh/2+4}" style="fill:var(--text-2);font-size:11px;font-variant-numeric:tabular-nums">${Util.fNum(r.value)}${o.suffix||''}</text>`;
+        g += `<path d="${barH(labelW, y, w, bh, 4)}" style="fill:${color}" data-tip="${esc(r.tip || tipRow(color, r.label, Util.fNum(r.value), o.unit||''))}" data-key="${esc(r.key!=null?r.key:r.label)}" data-idx="${i}"/>`;
+        g += `<text x="${labelW+w+7}" y="${y+bh/2+4}" style="fill:var(--text-2);font-size:11px;font-variant-numeric:tabular-nums">${Util.fNum(r.value)}${o.suffix||''}`
+           + `${r.extra ? '<tspan style="fill:var(--muted);font-size:10px"> ' + esc(r.extra) + '</tspan>' : ''}</text>`;
       });
       host.innerHTML = wrapSvg(W,H,g);
       bind(host,o);
@@ -6178,6 +6179,102 @@ const Aging = (() => {
 
 /* ============================ Análise de Fluxo ============================ */
 const FluxoView = (() => {
+  /* gargalo geral: quanto tempo as NCRs costumam ficar em cada status ou etapa,
+     somando TODAS as passagens (de NCRs abertas e fechadas), e nao so quem esta
+     parado agora */
+  const st = {agrupar:'status', incluir:'concluidas', medida:'media'};
+
+  /* uma linha por passagem: entrou no status em "ini", saiu em "fim" */
+  function passagens(list){
+    const out = [], agora = new Date().toISOString();
+    const chave = s => st.agrupar === 'etapa' ? Flow.etapa(Flow.ordemInferida(s)) : Util.strVal(s);
+    list.forEach(n => {
+      const ev = DB.eventos(n.key).filter(e => Flow.isFluxoEvt(e) && e.para);
+      let cur = null;
+      const fechar = (fim, andamento) => {
+        if(!cur) return;
+        const dias = (new Date(fim) - new Date(cur.ini)) / Util.DAY;
+        /* chegada estimada no mesmo dia da saida: tempo desconhecido, fica de fora */
+        if(!(cur.estimado && dias <= 0) && dias >= 0)
+          out.push({n, k:cur.k, st:cur.st, ini:cur.ini, fim: andamento ? null : fim, dias, andamento});
+        cur = null;
+      };
+      ev.forEach(e => {
+        const k = chave(e.para);
+        if(cur && cur.k === k) return;          /* etapa: status seguidos da mesma etapa sao uma passagem so */
+        fechar(e.data, false);
+        cur = Flow.isFinal(e.para) ? null : {k, st:e.para, ini:e.data, estimado:!!e.estimado};
+      });
+      if(cur && !n.fechada && st.incluir === 'todas') fechar(agora, true);
+    });
+    return out;
+  }
+  function agregar(ps){
+    const m = new Map();
+    ps.forEach(p => { if(!m.has(p.k)) m.set(p.k, []); m.get(p.k).push(p); });
+    return Array.from(m.entries()).map(([k, arr]) => {
+      const ds = arr.map(p => p.dias).sort((a, b) => a - b);
+      const media = ds.reduce((s, x) => s + x, 0) / ds.length;
+      const mediana = ds.length % 2 ? ds[(ds.length - 1) / 2] : (ds[ds.length/2 - 1] + ds[ds.length/2]) / 2;
+      return {k, arr, n:arr.length, ncrs:new Set(arr.map(p => p.n.key)).size, media, mediana,
+              p90: ds[Math.min(ds.length - 1, Math.floor(ds.length * 0.9))], andamento: arr.filter(p => p.andamento).length};
+    }).sort((a, b) => (st.medida === 'mediana' ? b.mediana - a.mediana : b.media - a.media));
+  }
+  function listaPassagens(titulo, g){
+    const arr = g.arr.slice().sort((a, b) => b.dias - a.dias);
+    const mostrar = () => {
+      UI.modal({title: esc(titulo), sub: Util.fNum(arr.length) + ' passagem(ns) · ' + Util.fNum(g.ncrs) + ' NCR(s) · média '
+          + Util.fDec(g.media, 0) + ' d · mediana ' + Util.fDec(g.mediana, 0) + ' d',
+        body: '<div class="tbl-wrap" style="max-height:64vh"><table class="tbl"><thead><tr><th>NCR</th>'
+          + (st.agrupar === 'etapa' ? '<th>Status ao entrar</th>' : '') + '<th>Entrou</th><th>Saiu</th><th class="num">Dias</th><th>Status atual</th></tr></thead><tbody>'
+          + arr.map(p => `<tr class="clickable" data-k="${esc(p.n.key)}"><td><b>${esc(p.n.id)}</b></td>
+              ${st.agrupar === 'etapa' ? '<td class="small">' + esc(p.st) + '</td>' : ''}
+              <td>${Util.fDate(p.ini)}</td><td>${p.andamento ? '<span class="badge warn">ainda nele</span>' : Util.fDate(p.fim)}</td>
+              <td class="num"><b>${Util.fDec(p.dias, 0)}</b></td><td>${badgeStatus(p.n)}</td></tr>`).join('')
+          + '</tbody></table></div><div class="small muted" style="margin-top:8px">Cada linha é uma passagem. Clique para abrir a NCR.</div>',
+        footer: '<button class="btn" id="gpCsv">Exportar CSV</button><button class="btn" data-close>Fechar</button>'});
+      $$('#modalBody tr[data-k]').forEach(tr => tr.onclick = () => Detalhe.abrir(tr.dataset.k, {voltar: mostrar}));
+      $('#gpCsv').onclick = () => Util.download('passagens_' + Util.stamp() + '.csv', Util.toCSV(
+        [['NCR','Status','Entrou','Saiu','Dias','Status atual']].concat(arr.map(p =>
+          [p.n.id, p.st, Util.fDate(p.ini), p.andamento ? '(ainda nele)' : Util.fDate(p.fim), Math.round(p.dias), p.n.status || '']))),
+        'text/csv;charset=utf-8');
+    };
+    mostrar();
+  }
+  function gargaloGeral(host, list){
+    const grupos = agregar(passagens(list));
+    const val = g => st.medida === 'mediana' ? g.mediana : g.media;
+    const ctl = document.createElement('div');
+    ctl.className = 'hstack wrap';
+    ctl.style.cssText = 'gap:14px;margin-bottom:10px;align-items:center';
+    const seg = (id, ops) => '<span class="hstack" style="gap:4px">' + ops.map(([v, l]) =>
+      `<button class="btn sm${st[id] === v ? ' primary' : ''}" data-g="${id}" data-v="${v}">${l}</button>`).join('') + '</span>';
+    ctl.innerHTML = '<span class="small muted">Agrupar</span>' + seg('agrupar', [['status','Por status'],['etapa','Por etapa do fluxo']])
+      + '<span class="small muted">Contar</span>' + seg('incluir', [['concluidas','Só passagens concluídas'],['todas','Concluídas + em andamento']])
+      + '<span class="small muted">Medida</span>' + seg('medida', [['media','Média'],['mediana','Mediana']]);
+    host.appendChild(ctl);
+    const ch = document.createElement('div');
+    ch.className = 'chart-host';
+    host.appendChild(ch);
+    const nota = document.createElement('div');
+    nota.className = 'small muted';
+    nota.style.marginTop = '8px';
+    nota.innerHTML = 'Soma todas as vezes que as NCRs do recorte passaram por cada ' + (st.agrupar === 'etapa' ? 'etapa' : 'status')
+      + ' — de NCRs <b>abertas e fechadas</b> — e mostra quanto tempo ficaram ali. O número ao lado é a quantidade de passagens.'
+      + (st.incluir === 'todas' ? ' As abertas que ainda estão no status entram contando até hoje.' : '')
+      + ' A <b>mediana</b> é menos distorcida por poucos casos muito longos. Clique numa barra para ver as passagens.';
+    host.appendChild(nota);
+    $$('[data-g]', ctl).forEach(b => b.onclick = () => { st[b.dataset.g] = b.dataset.v; UI.render('fluxo'); });
+    Charts.hbar(ch, {data: grupos.map(g => ({label:g.k, value:Math.round(val(g)), key:g.k, extra:'· ' + g.n + ' passag.',
+        tip:'<div class="tt-t">' + esc(g.k) + '</div><div class="small">média <b>' + Util.fDec(g.media, 0) + ' d</b> · mediana <b>'
+          + Util.fDec(g.mediana, 0) + ' d</b><br>90% saíram em até ' + Util.fDec(g.p90, 0) + ' d<br>' + g.n + ' passagem(ns) de '
+          + g.ncrs + ' NCR(s)' + (g.andamento ? '<br>' + g.andamento + ' ainda em andamento' : '') + '</div>'})),
+      limit:30, suffix:' d', padR:120,
+      colorFn: d => d.value >= 60 ? 'var(--critical)' : d.value >= 30 ? 'var(--warning)' : 'var(--s3)',
+      emptyMsg:'Ainda não há passagens concluídas no recorte',
+      onClick: k => { const g = grupos.find(x => x.k === k); if(g) listaPassagens((st.agrupar === 'etapa' ? 'Etapa: ' : 'Status: ') + k, g); }});
+  }
+
   function render(host){
     if(!DB.contagem().ncrs){ host.innerHTML = semDados('Importe ao menos dois arquivos Excel para analisar a evolução do fluxo.'); return; }
     host.innerHTML = '';
@@ -6230,12 +6327,14 @@ const FluxoView = (() => {
         ${tileHtml('Reaberturas', Util.fNum(r.reaberturas), 'após fechamento', 'var(--s2)')}
         ${tileHtml('Tempo até fechamento', fech?Util.fDec(fech.media,0)+' d':'—', fech?('mediana '+fech.mediana+' d · '+fech.n+' NCRs'):'sem fechamentos', 'var(--s7)')}
       </div>
-      <div class="grid g2" style="margin-bottom:14px">
-        ${card('Movimentações por mês e tipo','últimos 12 meses','<div class="chart-host" id="chF1"></div>')}
-        ${card('Tempo médio por etapa concluída','dias entre entrada e saída do status','<div class="chart-host" id="chF2"></div>')}
+      <div style="margin-bottom:14px">
+        ${card('Gargalo geral — tempo por etapa concluída','dias entre entrar e sair · todas as passagens, de NCRs abertas e fechadas','<div id="chGarg"></div>')}
       </div>
       <div class="grid g2" style="margin-bottom:14px">
-        ${card('Gargalos — tempo médio das NCRs paradas em cada status','dias no status, NCRs em aberto','<div class="chart-host" id="chF3"></div>')}
+        ${card('Movimentações por mês e tipo','últimos 12 meses','<div class="chart-host" id="chF1"></div>')}
+        ${card('Gargalos atuais — NCRs abertas paradas agora','dias no status atual, só NCRs em aberto','<div class="chart-host" id="chF3"></div>')}
+      </div>
+      <div style="margin-bottom:14px">
         ${card('Transições mais frequentes','top 20','<div class="tbl-wrap" style="max-height:330px"><table class="tbl"><thead><tr><th>Transição</th><th>Tipo</th><th class="num">Ocorrências</th></tr></thead><tbody>'
           + (topTrans.length ? topTrans.map(t => `<tr><td><span class="small">${esc(t.de||'—')}</span> <span class="arrowto">→</span> <b>${esc(t.para||'—')}</b></td>
               <td><span class="mv mv-${esc(t.cls)}">${Flow.ICON[t.cls]||''} ${esc(Flow.LABEL[t.cls]||t.cls)}</span></td><td class="num">${t.n}</td></tr>`).join('')
@@ -6257,10 +6356,7 @@ const FluxoView = (() => {
       </div>`;
     host.appendChild(box);
     Charts.stacked($('#chF1'), {categories:meses, series, height:250, emptyMsg:'Sem movimentações no período'});
-    Charts.hbar($('#chF2'), {data: tempos.filter(t => t.mediaDias != null).slice(0,14)
-        .map(t => ({label:t.status, value:Math.round(t.mediaDias), key:t.status})), suffix:' d', unit:'dias em média',
-      colorFn: d => { const o = Flow.ordemDe(d.label); return o == null ? 'var(--muted)' : Charts.SERIES[(o-1)%8]; },
-      emptyMsg:'Ainda não há etapas concluídas (necessário ao menos 2 importações com mudança de status)'});
+    gargaloGeral($('#chGarg'), list);
     Charts.hbar($('#chF3'), {data: gargalos.map(t => ({label:t.status+' ('+t.emAberto+')', value:Math.round(t.mediaAbertoDias), key:t.status})),
       suffix:' d', colorFn: d => d.value >= 60 ? 'var(--critical)' : d.value >= 30 ? 'var(--warning)' : 'var(--s3)',
       onClick: k => { const stt = String(k).replace(/\s\(\d+\)$/,'');

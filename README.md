@@ -102,6 +102,10 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
     comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
   - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
     e cada bigrama vira uma opção de filtro e um grupo próprio.
+- **Gargalo geral** (*Análise de Fluxo*): tempo que as NCRs costumam ficar em cada status ou
+  etapa, somando **todas as passagens** — de NCRs abertas e fechadas —, por média ou mediana,
+  com a opção de incluir quem ainda está no status. Clicar numa barra lista as passagens.
+  O gráfico *Gargalos atuais* continua mostrando só as abertas paradas agora.
 - **Aging de abertas, fechadas ou geral**: nas fechadas o aging é medido até o fechamento
   (quanto tempo ficaram paradas antes de encerrar e a idade até fechar).
 - **Clique nos gráficos abre a lista, sem filtrar**: em Aging, Dashboard, Produtos e Análise de
