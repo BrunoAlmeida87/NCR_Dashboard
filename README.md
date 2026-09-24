@@ -102,6 +102,11 @@ guardando o banco no armazenamento interno do navegador e importando os Excel ma
     comum a todos. Os valores originais continuam visíveis, nunca são substituídos.
   - `Bigramas` é **multivalorado**: uma célula com `ES, FP, ER, DP` entra nos quatro sistemas,
     e cada bigrama vira uma opção de filtro e um grupo próprio.
+- **Tipo de NCR** (CG, ESC, UFEM) é um recorte lido do próprio número da NCR
+  (`NCR-ICN-ESC-14-0195-2024` → ESC), sem depender de coluna do Excel.
+- **Texto de cada movimento**: o extrator também lê as *Ações e Decisões* (Ação 1.2,
+  Deliberação N1, Ação PCP…), que são ligadas à mudança de estado do mesmo instante. No
+  fluxo gráfico, as etapas com texto têm um ✎ e o texto aparece ao passar o mouse.
 - **Aviso discreto de filtro**: quando há recorte ativo, o topo mostra quantos filtros estão
   aplicados e quantas NCRs restam — e, nas telas que não usam o recorte (Importações, Arquivos,
   Configurações), avisa que elas seguem mostrando os dados completos. Um clique lista e limpa.

@@ -1175,6 +1175,29 @@ if(isWorker){
     return out;
   }
 
+  /* "Ações e Decisões": o que a pessoa escreveu ao avançar a NCR (Ação 1.2,
+     Deliberação N1, Ação PCP, Ação CQ, Ação Final TDP...). Cada bloco tem
+     titulo, data/hora, texto e autor; a data coincide com a da mudança de
+     estado que ele acompanha. */
+  function lerAcoes(doc){
+    const out = [], vistos = new Set();
+    doc.querySelectorAll('.box').forEach(box => {
+      const bq = box.querySelector(':scope > .box-body blockquote');
+      const tm = box.querySelector(':scope > .box-header .time');
+      const h = box.querySelector(':scope > .box-header h3');
+      if(!bq || !tm || !h) return;
+      const dataTexto = txt(tm);
+      const titulo = txt(h);
+      const partes = Array.from(bq.querySelectorAll('p')).map(p => p.textContent.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+      const texto = partes.length ? partes.join('\n') : txt(bq).replace(txt(bq.querySelector('footer')), '').trim();
+      const ch = titulo + '|' + dataTexto;
+      if(vistos.has(ch)) return;
+      vistos.add(ch);
+      out.push({titulo, data:dataISO(dataTexto), dataTexto, texto, usuario:txt(bq.querySelector('footer'))});
+    });
+    return out;
+  }
+
   /* devolve null enquanto a página ainda não terminou de montar */
   function lerPagina(doc){
     const ul = acharTimeline(doc);
@@ -1183,7 +1206,7 @@ if(isWorker){
     if(!eventos.length) return null;
     const cab = lerCabecalho(doc);
     if(!cab.numero) return null;
-    return Object.assign(cab, {eventos, marcos:lerMarcos(doc)});
+    return Object.assign(cab, {eventos, marcos:lerMarcos(doc), acoes:lerAcoes(doc)});
   }
 
   function pareceLogin(win){
@@ -1788,14 +1811,14 @@ const $ = Util.$, $$ = Util.$$, esc = Util.esc;
 const Cfg = (() => {
   const FLUXO_PADRAO = [
     {ordem:1, status:'ICN 1.1/1.2'},
-    {ordem:1, status:'2.1 - Especialista ICN'},
+    {ordem:2, status:'2.1 - Especialista ICN'},
     {ordem:2, status:'2.2 - TA Qualité'},
     {ordem:2, status:'2.2 - TA Qualité Validation'},
     {ordem:2, status:'2.2 - TA Specialist'},
     {ordem:3, status:'3.2 - DA'},
     {ordem:4, status:'5.1 - COMISS Combate'},
     {ordem:4, status:'5.1 - COMISS Plataf'},
-    {ordem:4, status:'5.1 - DELIN'},
+    {ordem:3, status:'5.1 - DELIN'},
     {ordem:5, status:'6.1 - COMISS'},
     {ordem:5, status:'6.1 - COMISS RE-TESTE'},
     {ordem:5, status:'6.1 - CQ'},
@@ -1843,6 +1866,9 @@ const Cfg = (() => {
       {id:'sbr', rot:'SBR', alias:['sbr'], normalizar:'sbr', multi:false,
        fixos:['53A','53B','53C','53D'],
        ajuda:'Os cascos 53A, 53B, 53C e 53D ficam sempre na lista; grafias como "53 d" e "53-D" caem no mesmo grupo. "SBRall" aparece quando o export traz alguma NCR marcada como comum a todos.'},
+      {id:'tipo', rot:'Tipo de NCR', alias:[], derivado:'tipoId', normalizar:null, multi:false,
+       fixos:['CG','ESC','UFEM'],
+       ajuda:'Lido do próprio número da NCR (NCR-ICN-ESC-14-0195-2024 → ESC). Não depende de coluna do Excel.'},
       {id:'sby', rot:'SBY', alias:['sby'], normalizar:null, multi:false,
        ajuda:'Nenhum dos exports lidos ate agora traz uma coluna SBY. Aponte a coluna correta aqui quando ela existir.'},
       {id:'sistema', rot:'Sistemas (bigramas)', alias:['bigramas','bigrama','sistema','sistemas','system','systems'],
@@ -2327,6 +2353,7 @@ const DB = (() => {
   const campos = () => idx.campos.slice();
 
   async function load(){
+    let migrouEtapas = false;
     const files = ['configuracao','ncr','produtos','historico','arquivos_processados','importacoes','historico_sistema'];
     const res = {};
     for(const f of files){
@@ -2337,6 +2364,20 @@ const DB = (() => {
       d.config = Object.assign(Cfg.base(), res.configuracao);
       if(!Array.isArray(d.config.fluxo) || !d.config.fluxo.length) d.config.fluxo = Cfg.FLUXO_PADRAO.slice();
       if(!d.config.etapas) d.config.etapas = Cfg.ETAPAS;
+      /* 2.1 - Especialista ICN pertence a Analise Tecnica e 5.1 - DELIN a
+         Deliberacao: corrige o fluxo salvo que ainda os tinha em Abertura e
+         Comissionamento, e marca para reclassificar o historico */
+      (d.config.fluxo || []).forEach(f => {
+        if(!f) return;
+        if(Util.norm(f.status) === Util.norm('2.1 - Especialista ICN') && Number(f.ordem) === 1){ f.ordem = 2; migrouEtapas = true; }
+        if(Util.norm(f.status) === Util.norm('5.1 - DELIN') && Number(f.ordem) === 4){ f.ordem = 3; migrouEtapas = true; }
+      });
+      /* recorte "Tipo de NCR" (CG, ESC, UFEM), lido do numero da NCR */
+      if(Array.isArray(d.config.dimensoes) && !d.config.dimensoes.some(x => x && x.id === 'tipo')){
+        const pad = Cfg.PADRAO.dimensoes.find(x => x.id === 'tipo');
+        const i = d.config.dimensoes.findIndex(x => x && x.id === 'sbr');
+        d.config.dimensoes.splice(i < 0 ? 0 : i + 1, 0, Util.clone(pad));
+      }
       /* recortes de SBR: SBR1..SBR4 deram lugar aos cascos 53A..53D */
       (d.config.dimensoes || []).forEach(dm => {
         if(dm && dm.id === 'sbr' && JSON.stringify(dm.fixos || []) === JSON.stringify(['SBR1','SBR2','SBR3','SBR4'])){
@@ -2354,7 +2395,41 @@ const DB = (() => {
     d.meta = (res.ncr && res.ncr.meta) || d.meta;
     idx.carregado = true;
     reindex();
+    if(migrouEtapas && d.historico.length){
+      reclassificarFluxo();
+      try{ await save(['config','ncr','historico']); }catch(e){ console.error(e); }
+    } else if(migrouEtapas){
+      try{ await save(['config']); }catch(e){ console.error(e); }
+    }
     return contagem();
+  }
+  /* depois de mudar a etapa de um status: refaz ordem e classificacao dos
+     movimentos ja gravados e os contadores de cada NCR */
+  function reclassificarFluxo(){
+    d.historico.forEach(e => {
+      if(!Flow.isFluxoEvt(e) || e.de == null || e.cls === 'INICIAL') return;
+      const od = Flow.ordemInferida(e.de), op = Flow.ordemInferida(e.para);
+      if(od === e.ordemDe && op === e.ordemPara) return;
+      e.ordemDe = od; e.ordemPara = op;
+      if(e.cls === 'RETORNO' && /rejeitada/.test(e.obs || '')) return;   /* rejeicao registrada no export */
+      e.cls = Flow.classificar(e.de, e.para);
+    });
+    for(const k in d.ncrs){
+      const n = d.ncrs[k];
+      n.ordem = Flow.ordemDe(n.status);
+      const mov = {avancos:0, retornos:0, laterais:0, fechamentos:0, reaberturas:0, total:0, campos:(n.mov && n.mov.campos) || 0};
+      eventos(k).forEach(e => {
+        if(!Flow.isFluxoEvt(e) || e.cls === 'INICIAL' || e.de == null) return;
+        mov.total++;
+        if(e.cls === 'AVANCO') mov.avancos++;
+        else if(e.cls === 'RETORNO') mov.retornos++;
+        else if(e.cls === 'LATERAL') mov.laterais++;
+        else if(e.cls === 'FECHAMENTO') mov.fechamentos++;
+        else if(e.cls === 'REABERTURA') mov.reaberturas++;
+      });
+      n.mov = mov;
+    }
+    if(typeof SistemaHist !== 'undefined') SistemaHist.reaplicar();
   }
   function contagem(){
     return {ncrs: Object.keys(d.ncrs).length, produtos: Object.keys(d.produtos).length,
@@ -2489,6 +2564,8 @@ const History = (() => {
             estimado:o.estimado?1:0};
     /* origem do dado quando nao e um Excel (ex.: 'SISTEMA' = aba Historico do NCR Integrada) */
     if(o.fonte) ev.fonte = o.fonte;
+    /* texto que a pessoa escreveu ao fazer o movimento (acao do sistema) */
+    if(o.texto){ ev.texto = o.texto; ev.acao = o.acao || null; }
     return ev;
   }
   return {diff, evento, monitorados, invalidarCache};
@@ -3388,7 +3465,10 @@ const SistemaHist = (() => {
       eventos:(r.eventos || []).filter(e => e && e.data && (e.tipo === 'STATUS' || e.tipo === 'CRIACAO'))
         .map(e => ({data:e.data, usuario:e.usuario || '', de:e.statusDe || '', para:e.para || null, tipo:e.tipo})),
       outros:(r.eventos || []).filter(e => e && e.tipo !== 'STATUS' && e.tipo !== 'CRIACAO').length,
-      marcos:(r.marcos || []).filter(m => m && m.data)};
+      marcos:(r.marcos || []).filter(m => m && m.data),
+      /* o que a pessoa escreveu ao avancar (Ação 1.2, Deliberação N1, Ação PCP...) */
+      acoes:(r.acoes || []).filter(a => a && a.data && a.texto)
+        .map(a => ({titulo:a.titulo || '', data:a.data, usuario:a.usuario || '', texto:String(a.texto).slice(0, 4000)}))};
   }
 
   /* transicoes em ordem cronologica. A pagina lista do mais novo para o mais
@@ -3415,7 +3495,28 @@ const SistemaHist = (() => {
       out.push({data:e.data, de:atual, para:e.para, usuario:e.usuario, deRegistrado:e.de});
       atual = e.para;
     });
+    ligarAcoes(out, h.acoes || []);
     return out;
+  }
+  /* cada acao escrita e gravada no mesmo instante da mudanca de estado que
+     ela acompanha: liga pela hora (tolerancia de alguns segundos), dando
+     preferencia a mesma pessoa; cada acao vale para uma transicao so */
+  function ligarAcoes(trans, acoes){
+    if(!acoes.length) return;
+    const usadas = new Set();
+    trans.forEach(t => {
+      if(t.de == null) return;
+      const tt = new Date(t.data).getTime();
+      let melhor = -1, nota = Infinity;
+      acoes.forEach((a, i) => {
+        if(usadas.has(i)) return;
+        const dt = Math.abs(new Date(a.data).getTime() - tt);
+        if(dt > 5000) return;
+        const s = dt + (n(a.usuario) === n(t.usuario) ? 0 : 3000);
+        if(s < nota){ nota = s; melhor = i; }
+      });
+      if(melhor >= 0){ usadas.add(melhor); t.acao = acoes[melhor].titulo; t.texto = acoes[melhor].texto; }
+    });
   }
 
   function contarMov(mov, cls){
@@ -3501,7 +3602,8 @@ const SistemaHist = (() => {
           obs: (t.usuario ? 'Por ' + t.usuario : ROTULO)
              + (t.de == null && !t.criacao ? ' · estado inicial deduzido da primeira mudança registrada' : '')
              + (t.deRegistrado && n(t.deRegistrado) !== n(t.de) && n(t.deRegistrado) !== n(t.para)
-                ? ' · o sistema registra saída de "' + t.deRegistrado + '"' : '')}));
+                ? ' · o sistema registra saída de "' + t.deRegistrado + '"' : ''),
+          acao:t.acao, texto:t.texto}));
       });
     });
     d.historico = d.historico.concat(novos);
@@ -3872,7 +3974,7 @@ const Charts = (() => {
     });
   }, 180);
   window.addEventListener('resize', redrawAll);
-  return {hbar, column, stacked, donut, line, spark, SERIES, STATUS, SEQ, redrawAll, hideTip, niceMax};
+  return {hbar, column, stacked, donut, line, spark, SERIES, STATUS, SEQ, redrawAll, showTip, hideTip, niceMax};
 })();
 
 /* ============================ Metrics ============================ */
@@ -3994,7 +4096,8 @@ const Metrics = (() => {
         if(e.estimado && dur <= 0) continue;
         add(st, dur, true);
       }
-      const atual = n.statusDesde ? (Date.now()-new Date(n.statusDesde)) : null;
+      /* NCR encerrada nao esta parada em lugar nenhum: nao entra em "em aberto" */
+      const atual = !n.fechada && n.statusDesde ? (Date.now()-new Date(n.statusDesde)) : null;
       if(atual != null) add(n.status, atual, false);
     });
     return Array.from(acc.values()).map(a => ({
@@ -4071,6 +4174,18 @@ const Dim = (() => {
     return m ? 'SBR' + (+m[1]) : null;
   }
   const NORM = {sbr: grupoSbr};
+  /* tipo da NCR a partir do numero: NCR-ICN-ESC-14-0195-2024 -> ESC */
+  const TIPOS = ['CG','ESC','UFEM'];
+  function tipoDoId(id){
+    const segs = String(id || '').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+    const conhecido = segs.find(x => TIPOS.indexOf(x) >= 0);
+    if(conhecido) return conhecido;
+    const i = segs.indexOf('ICN');
+    const cand = i >= 0 ? segs[i+1] : segs[2];
+    return cand && /^[A-Z]{2,6}$/.test(cand) && cand !== 'NCR' ? cand : null;
+  }
+  const DERIVADOS = {tipoId: rec => { const t = tipoDoId(rec.id || rec.key); return t ? [t] : []; }};
+  const ROTULO_DERIVADO = {tipoId:'número da NCR'};
   /* valores de uma celula, ja separados e agrupados */
   function tokens(valor, d){
     const bruto = Util.strVal(valor).trim();
@@ -4091,10 +4206,16 @@ const Dim = (() => {
     const list = DB.listaNcrs();
     const cols = DB.campos();
     cache = defs().map(d => {
-      const col = acharColuna(d, cols);
+      const der = d.derivado && DERIVADOS[d.derivado];
+      const col = der ? ROTULO_DERIVADO[d.derivado] : acharColuna(d, cols);
       const cont = new Map(), brutos = new Map();
       let preenchidas = 0;
-      if(col) for(const n of list){
+      if(der) for(const n of list){
+        const ts = der(n);
+        if(ts.length) preenchidas++;
+        ts.forEach(t => cont.set(t, (cont.get(t) || 0) + 1));
+      }
+      else if(col) for(const n of list){
         const cru = Util.strVal(n.campos[col]).trim();
         if(cru) brutos.set(cru, (brutos.get(cru) || 0) + 1);
         const ts = tokens(n.campos[col], d);
@@ -4110,7 +4231,7 @@ const Dim = (() => {
          ainda que este export nao traga nenhuma NCR deles, e esconder a
          opcao faria parecer que o filtro esta quebrado */
       const valores = fixos.map(f => ({v:f, n:cont.get(f) || 0, fixo:true})).concat(encontrados);
-      return {id:d.id, rot:d.rot, ajuda:d.ajuda || '', multi:!!d.multi, normalizar:d.normalizar || null,
+      return {id:d.id, rot:d.rot, ajuda:d.ajuda || '', multi:!!d.multi, normalizar:d.normalizar || null, derivado:d.derivado || null,
               alias:(d.alias || []).slice(), fixos, col, valores, preenchidas,
               distintos: cont.size, usados: valores.filter(x => x.n > 0).length,
               brutos: Array.from(brutos.entries()).map(([v,n]) => ({v,n})).sort((a,b) => b.n - a.n || Util.cmp(a.v,b.v))};
@@ -4125,6 +4246,7 @@ const Dim = (() => {
   const colunasUsadas = () => build().filter(d => d.col).map(d => d.col);
   function tokensDe(rec, d){
     if(!d || !d.col) return [];
+    if(d.derivado && DERIVADOS[d.derivado]) return DERIVADOS[d.derivado](rec);
     return tokens((rec.campos || {})[d.col], d);
   }
   return {lista, get, disponiveis, colunasUsadas, tokensDe, tokens, invalidate, grupoSbr};
@@ -5170,7 +5292,7 @@ const Detalhe = (() => {
   let modoFluxo = 'traj';
   function sequencia(rec){
     const ev = DB.eventos(rec.key).filter(Flow.isFluxoEvt);
-    const out = ev.map(e => ({status:e.para, data:e.data, cls:e.cls, de:e.de, estimado:e.estimado, obs:e.obs}));
+    const out = ev.map(e => ({status:e.para, data:e.data, cls:e.cls, de:e.de, estimado:e.estimado, obs:e.obs, texto:e.texto, acao:e.acao}));
     if(!out.length && rec.status) out.push({status:rec.status, data:rec.primeiraVez, cls:'INICIAL'});
     return out;
   }
@@ -5308,16 +5430,21 @@ const Detalhe = (() => {
       const desc = descobertos.has(s.status);
       const fill = ehAtual ? (rec.fechada ? 'rgba(12,163,12,.16)' : 'var(--accent-wash)') : 'var(--surface-3)';
       const stroke = ehAtual ? (rec.fechada ? 'var(--good)' : 'var(--accent)') : cor;
-      const rl = rotuloSVG(s.status, NW - (n > 1 ? 40 : 18), 11), label = rl.label;
+      const rl = rotuloSVG(s.status, NW - (n > 1 ? 40 : 18) - (s.texto ? 14 : 0), 11), label = rl.label;
       const v = vis[s.status];
-      g += `<g><title>${esc(s.status)} — passo ${i+1} de ${seq.length}, ${Util.fDateTime(s.data)}`
-         + `${n > 1 ? '\n'+n+'ª passagem por esta etapa' : ''}`
-         + `${v && v.n > 1 ? '\n'+v.n+' passagens no total' : ''}`
-         + `${desc ? '\netapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}`
-         + `${s.obs ? '\n'+esc(s.obs) : ''}</title>`;
+      /* dica propria (nao o <title> do navegador): abre na hora e mostra o
+         texto que a pessoa escreveu ao fazer o movimento */
+      const dica = s.status + ' — passo ' + (i+1) + ' de ' + seq.length + ', ' + Util.fDateTime(s.data)
+         + (n > 1 ? '\n' + n + 'ª passagem por esta etapa' : '')
+         + (v && v.n > 1 ? '\n' + v.n + ' passagens no total' : '')
+         + (desc ? '\netapa registrada apenas nas colunas datadas do export (ordem inferida)' : '')
+         + (s.obs ? '\n' + s.obs : '');
+      g += `<g class="fx-no" data-tip="${esc(dica)}"${s.texto ? ` data-txt="${esc(s.texto)}" data-acao="${esc(s.acao || 'Texto registrado')}"` : ''}>`;
       g += `<rect class="no" x="${x}" y="${y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}"`
          + ` stroke-width="${ehAtual ? 2 : 1.4}"${desc ? ' stroke-dasharray="4 3"' : ''}/>`;
       g += `<text x="${x+10}" y="${y+NH/2+4}"${rl.aperta} style="fill:var(--text);font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
+      /* ✎: ha texto escrito neste movimento (aparece ao passar o mouse) */
+      if(s.texto) g += `<text x="${x+NW-(n > 1 ? 30 : 10)}" y="${y+NH/2+4}" text-anchor="end" style="fill:var(--accent);font-size:11px">✎</text>`;
       if(n > 1)
         g += `<circle cx="${x+NW-14}" cy="${y+NH/2}" r="9" style="fill:var(--s4)"/>`
            + `<text x="${x+NW-14}" y="${y+NH/2+3.5}" text-anchor="middle" style="fill:#fff;font-size:9px;font-weight:700">${n}ª</text>`;
@@ -5385,8 +5512,11 @@ const Detalhe = (() => {
       const rl = rotuloSVG(s, NW - (visitado && v.n > 1 ? 38 : 18), 11), label = rl.label;
       const dias = v && v.ms ? Math.round(v.ms/Util.DAY) : 0;
       const desc = descobertos.has(s);
-      g += `<g><title>${esc(s)}${visitado ? ' — '+v.n+' passagem(ns)'+(dias?', '+dias+' dia(s) acumulados':', tempo não informado pelo export') : ' — não percorrido'}`
-         + `${desc ? ' · etapa registrada apenas nas colunas datadas do export (ordem inferida)' : ''}</title>`;
+      const escritos = seq.filter(x => x.texto && Util.strVal(x.status) === Util.strVal(s))
+        .map(x => Util.fDateTime(x.data) + ' · ' + (x.acao || 'Texto registrado') + '\n' + x.texto).join('\n\n');
+      const dica = s + (visitado ? ' — ' + v.n + ' passagem(ns)' + (dias ? ', ' + dias + ' dia(s) acumulados' : ', tempo não informado pelo export') : ' — não percorrido')
+         + (desc ? ' · etapa registrada apenas nas colunas datadas do export (ordem inferida)' : '');
+      g += `<g class="fx-no" data-tip="${esc(dica)}"${escritos ? ` data-txt="${esc(escritos)}" data-acao="Escrito ao entrar nesta etapa"` : ''}>`;
       g += `<rect class="no" x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7" style="fill:${fill};stroke:${stroke}" stroke-width="${ehAtual?2:1}"${desc?' stroke-dasharray="4 3"':''}/>`;
       if(ehAtual) g += `<rect x="${p.x}" y="${p.y+4}" width="3" height="${NH-8}" rx="2" style="fill:${rec.fechada?'var(--good)':'var(--accent)'}"/>`;
       g += `<text x="${p.x+10}" y="${p.y+NH/2+4}"${rl.aperta} style="fill:${ink};font-size:11px${ehAtual?';font-weight:600':''}">${esc(label)}</text>`;
@@ -5484,7 +5614,9 @@ const Detalhe = (() => {
       const det = (e.tipo === 'CAMPO' || (e.tipo === 'PRODUTO' && e.de && e.para))
         ? '<div class="tl-detail"><span class="muted">de:</span> '+expansivel(e.de,180)+'<br><span class="muted">para:</span> '+expansivel(e.para,180)+'</div>'
         : ((e.obs && e.tipo !== 'INICIAL' && e.obs !== 'Estado inicial conhecido') ? '<div class="small muted" style="margin-top:3px">'+esc(e.obs)+'</div>' : '')
-          + (e.tipo === 'PRODUTO' ? '<div class="small muted">'+esc(Util.strVal(e.para||e.de))+'</div>' : '');
+          + (e.tipo === 'PRODUTO' ? '<div class="small muted">'+esc(Util.strVal(e.para||e.de))+'</div>' : '')
+          + (e.texto ? '<div class="tl-detail"><b>'+esc(e.acao || 'Texto registrado')+'</b><div style="white-space:pre-wrap;margin-top:3px">'
+              + expansivel(e.texto, 400)+'</div></div>' : '');
       return `<div class="tl-item t-${esc(cls)}">
         <div class="tl-date">${Util.fDateTime(e.data)}${e.arquivo?' · <span title="Arquivo de origem">'+esc(e.arquivo)+'</span>':''}</div>
         <div class="tl-main">${main}</div>${det}</div>`;
@@ -5603,6 +5735,16 @@ const Detalhe = (() => {
       const host = $('#fxHost');
       if(!host) return;
       host.innerHTML = modoFluxo === 'mapa' ? flowSVG(rec) : trajSVG(rec);
+      host.onmousemove = ev => {
+        const no = ev.target.closest && ev.target.closest('.fx-no');
+        if(!no){ Charts.hideTip(); return; }
+        const txt = no.getAttribute('data-txt');
+        Charts.showTip(ev, '<div style="max-width:440px;white-space:pre-wrap">' + esc(no.getAttribute('data-tip'))
+          + (txt ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(128,128,128,.4)"><b>'
+              + esc(no.getAttribute('data-acao')) + '</b><div style="margin-top:4px">' + esc(txt) + '</div></div>' : '')
+          + '</div>');
+      };
+      host.onmouseleave = () => Charts.hideTip();
       $('#fxHint').textContent = modoFluxo === 'mapa'
         ? 'Cada seta corre numa faixa própria; o número é a ordem do passo.'
         : 'De cima para baixo, na ordem real; a coluna mostra em que etapa do fluxo cada passo caiu.';
@@ -6122,11 +6264,18 @@ const Trilhas = (() => {
     const t1 = Math.max.apply(null, trilhas.map(t => t.pts[t.pts.length-1].t));
     if(st.t == null || st.t < t0 || st.t > t1) st.t = t0;
     const N = trilhas.length;
-    /* por status sao muitas colunas: mais estreitas, cabecalho em duas linhas
-       (nome e contagem) e rolagem horizontal em vez de encolher o desenho */
+    /* Tudo numa tela so: as colunas ocupam a largura disponivel e, quando nao
+       cabem numa linha (por status sao muitas), quebram para uma nova faixa
+       abaixo. Cada faixa tem a altura da maior lotacao das suas colunas. */
     const porStatus = m.tipo === 'status';
-    const COLW = porStatus ? 96 : 138, GAP = porStatus ? 6 : 10, PADT = porStatus ? 64 : 50, PADX = 8;
-    const HH = porStatus ? 38 : 24;
+    const GAP = porStatus ? 6 : 10, PADX = 8;
+    const HH = porStatus ? 38 : 24;            /* cabecalho: nome (e contagem, por status) */
+    const PADT = HH + 26;                      /* do topo da faixa ao primeiro ponto */
+    const larg = Math.max(560, (host.clientWidth || 1200) - 24);
+    const nCols = m.cols.length;
+    const COLMIN = porStatus ? 104 : 128, COLMAX = porStatus ? 150 : 170;
+    const porLinha = Math.max(1, Math.min(nCols, Math.floor((larg - 2*PADX + GAP) / (COLMIN + GAP))));
+    const COLW = Math.max(COLMIN, Math.min(COLMAX, Math.floor((larg - 2*PADX - (porLinha-1)*GAP) / porLinha)));
     const R = N > 400 ? 2.6 : N > 150 ? 3.4 : 4.4;
     const DX = R*2 + 3, DY = R*2 + 3;
     const perRow = Math.max(1, Math.floor((COLW - 16) / DX));
@@ -6134,21 +6283,30 @@ const Trilhas = (() => {
        altura sai da maior lotacao que alguma etapa chega a ter no periodo —
        varrendo os eventos uma vez, em vez de reservar espaco para o caso
        improvavel de todas as NCRs caberem numa etapa so */
-    const maxRows = (() => {
+    const maxPor = (() => {
       const evs = [];
       trilhas.forEach(t => t.pts.forEach((pt,i) => evs.push({t:pt.t, entra:pt.c, sai: i ? t.pts[i-1].c : -1})));
       evs.sort((a,b) => a.t - b.t);
-      const cur = new Array(m.cols.length).fill(0);
-      let max = 1;
+      const cur = new Array(nCols).fill(0), max = new Array(nCols).fill(1);
       evs.forEach(e => {
         if(e.sai >= 0) cur[e.sai]--;
         cur[e.entra]++;
-        if(cur[e.entra] > max) max = cur[e.entra];
+        if(cur[e.entra] > max[e.entra]) max[e.entra] = cur[e.entra];
       });
-      return Math.ceil(max / perRow);
+      return max;
     })();
-    const W = PADX*2 + m.cols.length*COLW + (m.cols.length-1)*GAP;
-    const H = PADT + Math.max(4, maxRows)*DY + 12;
+    /* posicao de cada coluna: x, topo da faixa e onde comecam os pontos */
+    const lay = [];
+    let topo = 0;
+    for(let ini = 0; ini < nCols; ini += porLinha){
+      const fim = Math.min(nCols, ini + porLinha);
+      let linhas = 2;
+      for(let i = ini; i < fim; i++) linhas = Math.max(linhas, Math.ceil(maxPor[i] / perRow));
+      for(let i = ini; i < fim; i++) lay[i] = {x: PADX + (i-ini)*(COLW+GAP), top: topo, y0: topo + PADT};
+      topo += PADT + linhas*DY + 18;
+    }
+    const W = PADX*2 + Math.min(nCols, porLinha)*COLW + (Math.min(nCols, porLinha)-1)*GAP;
+    const H = topo;
 
     const box = document.createElement('div');
     box.innerHTML = `
@@ -6162,9 +6320,8 @@ const Trilhas = (() => {
         </select>
         <b id="repData" class="mono"></b>
       </div>
-      <div class="rep-wrap"><svg id="repSvg" viewBox="0 0 ${W} ${H}"
-        ${porStatus ? `width="${W}" height="${H}" style="display:block;max-width:none"`
-                    : `width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:${W}px;height:auto;display:block"`}></svg></div>
+      <div class="rep-wrap"><svg id="repSvg" viewBox="0 0 ${W} ${H}" width="100%"
+        preserveAspectRatio="xMinYMin meet" style="max-width:${W}px;height:auto;display:block"></svg></div>
       ${excedente ? '<div class="note warn small" style="margin-top:10px">Reproduzindo ' + Util.fNum(teto)
         + ' de ' + Util.fNum(todas.length) + ' NCRs do recorte, escolhidas por <b>' + esc(ord.lbl.toLowerCase())
         + '</b>. Em <b>NCRs</b>, escolha <b>Todas</b> para ver o conjunto inteiro.</div>' : ''}
@@ -6182,11 +6339,11 @@ const Trilhas = (() => {
     const mk = (tag, attrs) => { const e = document.createElementNS(ns, tag); for(const k in attrs) e.setAttribute(k, attrs[k]); return e; };
     /* colunas */
     m.cols.forEach((c,i) => {
-      const x = PADX + i*(COLW+GAP);
+      const x = lay[i].x, top = lay[i].top;
       const cab = mk('g', {});
       const ttl = mk('title', {}); ttl.textContent = c.titulo; cab.appendChild(ttl);
-      cab.appendChild(mk('rect', {x, y:14, width:COLW, height:HH, rx:6, style:'fill:var(--surface-3)'}));
-      const tx = mk('text', {x:x+(porStatus ? 6 : 10), y:29, style:'fill:var(--text-2);font-size:' + (porStatus ? 9.5 : 10) + 'px;font-weight:600'});
+      cab.appendChild(mk('rect', {x, y:top+14, width:COLW, height:HH, rx:6, style:'fill:var(--surface-3)'}));
+      const tx = mk('text', {x:x+(porStatus ? 6 : 10), y:top+29, style:'fill:var(--text-2);font-size:' + (porStatus ? 9.5 : 10) + 'px;font-weight:600'});
       /* o nome inteiro, comprimido se preciso; so corta o que nao caberia nem assim */
       const disp = COLW - (porStatus ? 12 : 44);
       const fs = porStatus ? 9.5 : 10;
@@ -6198,11 +6355,11 @@ const Trilhas = (() => {
       svg.appendChild(cab);
       /* a contagem fica no cabecalho, encostada nos pontos que ela conta */
       const cnt = mk('text', porStatus
-        ? {x:x+COLW/2, y:44, 'text-anchor':'middle', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i}
-        : {x:x+COLW-10, y:29, 'text-anchor':'end', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i});
+        ? {x:x+COLW/2, y:top+44, 'text-anchor':'middle', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i}
+        : {x:x+COLW-10, y:top+29, 'text-anchor':'end', style:'fill:var(--text);font-size:11px;font-weight:700;font-variant-numeric:tabular-nums', id:'repC'+i});
       cnt.textContent = '0';
       svg.appendChild(cnt);
-      svg.appendChild(mk('path', {d:`M${x},${PADT-8} H${x+COLW}`, style:'stroke:var(--grid)', 'stroke-width':1}));
+      svg.appendChild(mk('path', {d:`M${x},${lay[i].y0-8} H${x+COLW}`, style:'stroke:var(--grid)', 'stroke-width':1}));
     });
     /* um circulo por NCR, reaproveitado a cada quadro */
     const nodes = trilhas.map(t => {
@@ -6230,8 +6387,8 @@ const Trilhas = (() => {
         const pt = pts[i];
         const col = pt.c;
         const pos = ocup[col]++;
-        const x = PADX + col*(COLW+GAP) + 8 + (pos % perRow)*DX + R;
-        const y = PADT + Math.floor(pos / perRow)*DY + R;
+        const x = lay[col].x + 8 + (pos % perRow)*DX + R;
+        const y = lay[col].y0 + Math.floor(pos / perRow)*DY + R;
         nd.c.setAttribute('cx', x);
         nd.c.setAttribute('cy', y);
         nd.c.setAttribute('opacity', 1);
@@ -6849,7 +7006,8 @@ const Conf = (() => {
             return `<div class="kv" style="align-items:flex-start;gap:14px;flex-wrap:wrap">
               <div style="min-width:220px;flex:1">
                 <b>${esc(d.rot)}</b>
-                ${d.col ? '<span class="badge new" style="margin-left:6px">coluna “' + esc(d.col) + '”</span>'
+                ${d.derivado ? '<span class="badge new" style="margin-left:6px">' + esc(d.col) + '</span>'
+                  : d.col ? '<span class="badge new" style="margin-left:6px">coluna “' + esc(d.col) + '”</span>'
                         : '<span class="badge warn" style="margin-left:6px">coluna não encontrada</span>'}
                 <div class="small muted" style="white-space:normal;margin-top:3px">${esc(d.ajuda||'')}</div>
                 ${d.col ? '<div class="small muted" style="margin-top:4px">' + Util.fNum(d.preenchidas) + ' NCR(s) preenchidas · '
@@ -6863,7 +7021,8 @@ const Conf = (() => {
                               + esc(v.v) + ' (' + v.n + ')' + (v.n ? '' : '</span>')).join(', ')
                           + (d.valores.length > 12 ? ' e mais ' + (d.valores.length-12) : '') + '.</div>' : ''}
               </div>
-              <select data-dimcol="${esc(d.id)}" style="min-width:260px">${opts.join('')}</select>
+              ${d.derivado ? '<span class="small muted" style="min-width:260px">lido do número da NCR</span>'
+                           : `<select data-dimcol="${esc(d.id)}" style="min-width:260px">${opts.join('')}</select>`}
             </div>`;
           }).join('')}
           <div class="small muted" style="margin-top:10px">Um recorte sem coluna correspondente simplesmente não aparece nos filtros —
